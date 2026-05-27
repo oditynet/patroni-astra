@@ -1,0 +1,193 @@
+---
+# test_replication.yml
+# Простой тест репликации с числами
+
+- name: 1. Create test table on master
+  hosts: psql1server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Create table and insert numbers
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres << 'SQL'
+        DROP TABLE IF EXISTS test_numbers CASCADE;
+        CREATE TABLE test_numbers (id SERIAL PRIMARY KEY, number INTEGER);
+        INSERT INTO test_numbers (number) VALUES (1);
+        INSERT INTO test_numbers (number) VALUES (2);
+        INSERT INTO test_numbers (number) VALUES (3);
+        SQL
+      args:
+        executable: /bin/bash
+      register: create_result
+
+    - name: Show create result
+      ansible.builtin.debug:
+        var: create_result.stdout_lines
+
+    - name: Check data on master
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+      args:
+        executable: /bin/bash
+      register: master_data
+
+    - name: Display master data
+      ansible.builtin.debug:
+        msg:
+          - "Мастер (pgs1):"
+          - "{{ master_data.stdout_lines }}"
+
+- name: 2. Check data on replica pgs3 (should have 3 numbers)
+  hosts: psql3server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Check pgs3 data
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+      args:
+        executable: /bin/bash
+      register: pgs3_data
+
+    - name: Display pgs3 data
+      ansible.builtin.debug:
+        msg:
+          - "Реплика pgs3:"
+          - "{{ pgs3_data.stdout_lines }}"
+
+- name: 3. Stop replica pgs2
+  hosts: psql2server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Stop patroni on pgs2
+      ansible.builtin.shell: systemctl stop patroni.service
+      args:
+        executable: /bin/bash
+
+    - name: Show stop message
+      ansible.builtin.debug:
+        msg: "pgs2 остановлен"
+
+- name: 4. Insert more numbers while pgs2 is down
+  hosts: psql1server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Insert numbers 4, 5, 6
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres << 'SQL'
+        INSERT INTO test_numbers (number) VALUES (4);
+        INSERT INTO test_numbers (number) VALUES (5);
+        INSERT INTO test_numbers (number) VALUES (6);
+        SQL
+      args:
+        executable: /bin/bash
+
+    - name: Check master data
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+      args:
+        executable: /bin/bash
+      register: master_after
+
+    - name: Display master data
+      ansible.builtin.debug:
+        msg:
+          - "Мастер после добавления 4,5,6:"
+          - "{{ master_after.stdout_lines }}"
+
+- name: 5. Check replica pgs3 (should have all 6 numbers)
+  hosts: psql3server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Check pgs3 data
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+      args:
+        executable: /bin/bash
+      register: pgs3_after
+
+    - name: Display pgs3 data
+      ansible.builtin.debug:
+        msg:
+          - "Реплика pgs3 (должна иметь 6 чисел):"
+          - "{{ pgs3_after.stdout_lines }}"
+
+- name: 6. Start pgs2 and check it catches up
+  hosts: psql2server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Start patroni on pgs2
+      ansible.builtin.shell: systemctl start patroni.service
+      args:
+        executable: /bin/bash
+
+    - name: Wait for catch up
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Check pgs2 data
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+      args:
+        executable: /bin/bash
+      register: pgs2_data
+
+    - name: Display pgs2 data
+      ansible.builtin.debug:
+        msg:
+          - "Реплика pgs2 после восстановления (должна иметь 6 чисел):"
+          - "{{ pgs2_data.stdout_lines }}"
+
+- name: 7. Final summary
+  hosts: localhost
+  connection: local
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Show test results
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "============================================"
+          - "         ТЕСТ РЕПЛИКАЦИИ ЗАВЕРШЕН           "
+          - "============================================"
+          - ""
+          - "Шаги теста:"
+          - "  1. На мастере создана таблица test_numbers"
+          - "  2. Добавлены числа 1, 2, 3"
+          - "  3. Остановлена реплика pgs2"
+          - "  4. Добавлены числа 4, 5, 6"
+          - "  5. Проверена реплика pgs3 - должно быть 6 чисел"
+          - "  6. Запущена реплика pgs2"
+          - "  7. Проверена реплика pgs2 - должно быть 6 чисел"
+          - ""
+          - "Ожидаемый результат на всех узлах:"
+          - "  id | number"
+          - "  ---+--------"
+          - "   1 |      1"
+          - "   2 |      2"
+          - "   3 |      3"
+          - "   4 |      4"
+          - "   5 |      5"
+          - "   6 |      6"
+          - ""
+          - "Проверка на мастере:"
+          - "  /usr/lib/postgresql/11/bin/psql -h {{ hostvars[groups['psqlserver'][0]]['ansible_host'] }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
+          - ""
+          - "Проверка на репликах:"
+          - "  /usr/lib/postgresql/11/bin/psql -h {{ hostvars[groups['psqlserver'][1]]['ansible_host'] }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
+          - "  /usr/lib/postgresql/11/bin/psql -h {{ hostvars[groups['psqlserver'][2]]['ansible_host'] }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
+          - ""
+          - "Проверка через VIP:"
+          - "  /usr/lib/postgresql/11/bin/psql -h {{ VIP }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
+          - "============================================"

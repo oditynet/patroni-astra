@@ -1,0 +1,757 @@
+---
+# deploy_patroni_cluster.yml
+# Полный playbook для развертывания Patroni кластера с etcd и keepalived
+
+- name: 1. Prepare all nodes - Create users and install packages
+  hosts: psqlserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: APT | Remove cdrom from sources.list
+      ansible.builtin.replace:
+        path: /etc/apt/sources.list
+        regexp: '^deb cdrom.*'
+        replace: ''
+
+    - name: Create postgres system user
+      ansible.builtin.user:
+        name: postgres
+        password: "{{ pass_postgres | password_hash('sha512') }}"
+        shell: /bin/bash
+        create_home: yes
+        home: /var/lib/postgresql
+        state: present
+
+    - name: Create super_role system user
+      ansible.builtin.user:
+        name: super_role
+        password: '!'
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Create replica_role system user
+      ansible.builtin.user:
+        name: replica_role
+        password: '!'
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Create rewind_role system user
+      ansible.builtin.user:
+        name: rewind_role
+        password: '!'
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: APT | Uncomment repositories
+      ansible.builtin.replace:
+        path: /etc/apt/sources.list
+        regexp: '^\s*#\.*(.*repository-{{ item }}.*)'
+        replace: '\1'
+      loop:
+        - base
+        - extended
+
+    - name: APT | Update cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: APT | Install required packages
+      ansible.builtin.apt:
+        name:
+          - postgresql
+          - postgresql-client
+          - python-psycopg2
+          - python3-psycopg2
+          - acl
+          - python-ipaddress
+          - python3-pexpect
+          - python-pexpect
+          - python-pkg-resources
+          - python3-pkg-resources
+          - etcd-server
+          - etcd-client
+          - patroni
+          - python3-consul
+          - python3-etcd
+          - keepalived
+          - iptables
+          - iptables-persistent
+        state: present
+
+    - name: Config | Give postgres user rights to read mandatory access control database
+      ansible.builtin.shell: |
+        usermod -a -G shadow postgres
+        setfacl -d -m u:postgres:r /etc/parsec/macdb 2>/dev/null || true
+        setfacl -R -m u:postgres:r /etc/parsec/macdb 2>/dev/null || true
+        setfacl -m u:postgres:rx /etc/parsec/macdb 2>/dev/null || true
+        setfacl -d -m u:postgres:r /etc/parsec/capdb 2>/dev/null || true
+        setfacl -R -m u:postgres:r /etc/parsec/capdb 2>/dev/null || true
+        setfacl -m u:postgres:rx /etc/parsec/capdb 2>/dev/null || true
+        pdpl-user -l 0:0 postgres 2>/dev/null || true
+        pdpl-user -l 0:0 replica_role 2>/dev/null || true
+        pdpl-user -l 0:0 super_role 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+    - name: Stop and disable standard PostgreSQL
+      ansible.builtin.shell: |
+        systemctl stop postgresql 2>/dev/null || true
+        systemctl disable postgresql 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+    - name: Stop patroni if running
+      ansible.builtin.shell: |
+        systemctl stop patroni 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+    - name: Stop keepalived if running
+      ansible.builtin.shell: |
+        systemctl stop keepalived 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+    - name: Create required directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0750'
+      loop:
+        - /var/log/patroni
+        - /var/lib/postgresql/11/main
+        - /var/run/postgresql
+
+    - name: Create conf.d directory
+      ansible.builtin.file:
+        path: /var/lib/postgresql/11/main/conf.d
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0750'
+
+    - name: Create pgpass file for Patroni
+      ansible.builtin.copy:
+        dest: /var/lib/postgresql/.pgpass_patroni
+        content: |
+          *:*:*:super_role:{{ pass_postgres }}
+          *:*:*:postgres:{{ pass_postgres }}
+          *:*:replication:replica_role:{{ pass_repl }}
+          *:*:*:rewind_role:rewind
+        owner: postgres
+        group: postgres
+        mode: '0600'
+
+    - name: Find network interface
+      ansible.builtin.set_fact:
+        iface: "{{ item }}"
+      loop: "{{ ansible_facts.interfaces }}"
+      when: 
+        - ansible_facts[item].ipv4 is defined
+        - ansible_facts[item].ipv4.address == ansible_default_ipv4.address
+
+# ==================== IPTABLES ====================
+
+- name: 2. Configure iptables on all PostgreSQL nodes
+  hosts: psqlserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Create iptables rules
+      ansible.builtin.shell: |
+        # Очищаем все правила
+        iptables -F
+        iptables -X
+        iptables -t nat -F
+        iptables -t mangle -F
+        
+        # Политики по умолчанию
+        iptables -P INPUT DROP
+        iptables -P OUTPUT ACCEPT
+        iptables -P FORWARD DROP
+        
+        # Разрешаем loopback
+        iptables -A INPUT -i lo -j ACCEPT
+        
+        # Разрешаем установленные и связанные соединения
+        iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+        
+        # SSH - разрешаем отовсюду (для внешнего доступа)
+        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+        
+        # PostgreSQL - из сети кластера и VIP
+        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 5432 -j ACCEPT
+        iptables -A INPUT -s {{ VIP }} -p tcp --dport 5432 -j ACCEPT
+        
+        # Patroni REST API - из сети кластера
+        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 8008 -j ACCEPT
+        
+        # etcd client - из сети кластера
+        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 2379 -j ACCEPT
+        
+        # etcd peer - из сети кластера
+        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 2380 -j ACCEPT
+        
+        # VRRP (keepalived) - из сети кластера
+        iptables -A INPUT -s {{ CLUSTER_NET }} -p vrrp -j ACCEPT
+        iptables -A INPUT -d 224.0.0.18 -p vrrp -j ACCEPT
+        
+        # ICMP (ping) - отовсюду для диагностики
+        iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+        
+        # Сохраняем правила
+        iptables-save > /etc/iptables/rules.v4
+        
+        # Создаем systemd-сервис для восстановления правил при загрузке
+        cat > /etc/systemd/system/iptables-restore.service << 'SERVICE'
+        [Unit]
+        Description=Restore iptables rules
+        Before=network-pre.target
+        Wants=network-pre.target
+        
+        [Service]
+        Type=oneshot
+        ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+        RemainAfterExit=yes
+        
+        [Install]
+        WantedBy=multi-user.target
+        SERVICE
+        
+        # Активируем сервис для автозагрузки
+        systemctl daemon-reload
+        systemctl enable iptables-restore.service
+      args:
+        executable: /bin/bash
+
+
+# ==================== KEEPALIVED SCRIPTS ====================
+
+- name: 3. Create keepalived check scripts
+  hosts: psqlserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Remove immutable flag from scripts if they exist
+      ansible.builtin.shell: |
+        chattr -i /etc/keepalived/leader_check.sh 2>/dev/null || true
+        chattr -i /etc/keepalived/sync_standby_check.sh 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+    - name: Create leader check script
+      ansible.builtin.shell: |
+        cat > /etc/keepalived/leader_check.sh << 'SCRIPT'
+        #!/bin/bash
+        PATRONI_API_URL="http://127.0.0.1:8008"
+        code=$(curl -s -o /dev/null -w "%{http_code}" "$PATRONI_API_URL/primary")
+        if [ "$code" == "200" ]; then
+            exit 0
+        else
+            exit 1
+        fi
+        SCRIPT
+        chmod 700 /etc/keepalived/leader_check.sh
+      args:
+        executable: /bin/bash
+
+    - name: Create sync standby check script
+      ansible.builtin.shell: |
+        cat > /etc/keepalived/sync_standby_check.sh << 'SCRIPT'
+        #!/bin/bash
+        PATRONI_API_URL="http://127.0.0.1:8008"
+        code=$(curl -s -o /dev/null -w "%{http_code}" "$PATRONI_API_URL/sync")
+        if [ "$code" == "200" ]; then
+            exit 0
+        else
+            exit 1
+        fi
+        SCRIPT
+        chmod 700 /etc/keepalived/sync_standby_check.sh
+      args:
+        executable: /bin/bash
+
+    - name: Make scripts immutable
+      ansible.builtin.shell: |
+        chattr +i /etc/keepalived/leader_check.sh 2>/dev/null || true
+        chattr +i /etc/keepalived/sync_standby_check.sh 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+# ==================== KEEPALIVED CONFIGURATION ====================
+
+- name: 4. Configure keepalived on all PostgreSQL nodes
+  hosts: psqlserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Create keepalived configuration with Patroni checks
+      ansible.builtin.shell: |
+        cat > /etc/keepalived/keepalived.conf << EOF
+        global_defs {
+            script_user root
+            enable_script_security
+        }
+        
+        vrrp_script leader_check {
+            script "/etc/keepalived/leader_check.sh"
+            interval 1
+            fall 1
+            rise 1
+        }
+        
+        vrrp_instance PG_MASTER_VIP {
+            interface {{ iface }}
+            virtual_router_id 51
+            priority 255
+            advert_int 1
+            state BACKUP
+            nopreempt
+            authentication {
+                auth_type PASS
+                auth_pass P@sswd
+            }
+            virtual_ipaddress {
+                {{ VIP }}/24
+            }
+            track_script {
+                leader_check
+            }
+        }
+        EOF
+      args:
+        executable: /bin/bash
+
+- name: 5. Start keepalived on all nodes
+  hosts: psqlserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Start keepalived
+      ansible.builtin.shell: |
+        systemctl daemon-reload
+        systemctl restart keepalived.service &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+
+# ==================== ETCD CLUSTER ====================
+
+- name: 6. Clean etcd data on all nodes
+  hosts: etcdserver
+  become: true
+  tasks:
+    - name: Stop etcd
+      ansible.builtin.shell: systemctl stop etcd 2>/dev/null || true
+      args:
+        executable: /bin/bash
+
+    - name: Remove old etcd data
+      ansible.builtin.shell: /bin/rm -rf /var/lib/etcd/default
+      args:
+        executable: /bin/bash
+
+    - name: Create fresh etcd directory
+      ansible.builtin.file:
+        path: /var/lib/etcd/default
+        state: directory
+        owner: etcd
+        group: etcd
+        mode: '0750'
+
+- name: 7. Configure etcd on all nodes
+  hosts: etcdserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Create etcd configuration
+      ansible.builtin.shell: |
+        cat > /etc/default/etcd << 'EOF'
+        #[Member]
+        ETCD_DATA_DIR="/var/lib/etcd/default"
+        ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
+        ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+        ETCD_NAME="{{ inventory_hostname }}"
+        ETCD_HEARTBEAT_INTERVAL="1000"
+        ETCD_ELECTION_TIMEOUT="5000"
+        ETCD_ENABLE_V2="true"
+        #[Clustering]
+        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ ansible_host }}:2380"
+        ETCD_ADVERTISE_CLIENT_URLS="http://{{ ansible_host }}:2379"
+        ETCD_INITIAL_CLUSTER_TOKEN="etcdcluster"
+        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2380"
+        ETCD_INITIAL_CLUSTER_STATE="new"
+        EOF
+      args:
+        executable: /bin/bash
+
+- name: 8. Start etcd on all nodes simultaneously
+  hosts: etcdserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Start etcd in background
+      ansible.builtin.shell: |
+        systemctl daemon-reload
+        systemctl restart etcd.service &
+      args:
+        executable: /bin/bash
+      async: 15
+      poll: 0
+
+    - name: Wait for etcd to form cluster
+      ansible.builtin.pause:
+        seconds: 15
+
+- name: 9. Verify etcd cluster status
+  hosts: etcd1server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Check etcd endpoint status
+      ansible.builtin.shell: |
+        etcdctl --endpoints=http://{{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2379 endpoint status --cluster
+      args:
+        executable: /bin/bash
+      register: etcd_status
+      until: etcd_status.rc == 0
+      retries: 20
+      delay: 5
+
+    - name: Show etcd cluster status
+      ansible.builtin.debug:
+        var: etcd_status.stdout_lines
+
+- name: 10. Update etcd state to existing
+  hosts: etcdserver
+  become: true
+  serial: 1
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Change cluster state
+      ansible.builtin.replace:
+        path: /etc/default/etcd
+        regexp: 'ETCD_INITIAL_CLUSTER_STATE="new"'
+        replace: 'ETCD_INITIAL_CLUSTER_STATE="existing"'
+
+    - name: Restart etcd
+      ansible.builtin.shell: systemctl restart etcd.service &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+
+    - name: Pause between restarts
+      ansible.builtin.pause:
+        seconds: 5
+
+# ==================== PATRONI ====================
+
+- name: 11. Create Patroni configuration
+  hosts: psqlserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Create Patroni config
+      ansible.builtin.copy:
+        dest: /etc/patroni/config.yml
+        content: |
+          scope: psqlcluster
+          name: {{ hostname | default(inventory_hostname) }}
+          namespace: /service/
+          
+          log:
+            level: INFO
+            dir: /var/log/patroni
+          
+          restapi:
+            listen: 0.0.0.0:8008
+            connect_address: {{ ansible_host }}:8008
+          
+          etcd:
+            hosts: {{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379,{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379,{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2379
+          
+          bootstrap:
+            dcs:
+              ttl: 30
+              loop_wait: 10
+              retry_timeout: 10
+              maximum_lag_on_failover: 1048576
+              postgresql:
+                use_pg_rewind: true
+                use_slots: true
+                parameters:
+                  max_connections: 500
+                  wal_level: replica
+                  hot_standby: "on"
+                  wal_keep_segments: 100
+                  max_wal_senders: 10
+                  max_replication_slots: 10
+                  wal_log_hints: "on"
+                  shared_buffers: 1GB
+                  listen_addresses: "0.0.0.0"
+                  port: 5432
+            
+            initdb:
+              - encoding: UTF8
+              - locale: ru_RU.UTF-8
+              - data-checksums
+            
+            users:
+              postgres:
+                password: {{ pass_postgres }}
+                options:
+                  - superuser
+                  - createdb
+                  - createrole
+                  - login
+                  - replication
+              super_role:
+                password: {{ pass_postgres }}
+                options:
+                  - superuser
+                  - createdb
+                  - createrole
+                  - login
+                  - replication
+              replica_role:
+                password: {{ pass_repl }}
+                options:
+                  - replication
+                  - login
+              rewind_role:
+                password: rewind
+                options:
+                  - superuser
+                  - login
+            
+            pg_hba:
+              - local   all             all                                   md5
+              - local   replication     all                                   md5
+              - host    all             all             127.0.0.1/32          md5
+              - host    all             all             ::1/128               md5
+              - host    replication     replica_role    {{ hostvars[groups['psqlserver'][0]]['ansible_host'] }}/32    md5
+              - host    replication     replica_role    {{ hostvars[groups['psqlserver'][1]]['ansible_host'] }}/32    md5
+              - host    replication     replica_role    {{ hostvars[groups['psqlserver'][2]]['ansible_host'] }}/32    md5
+              - host    all             all             {{ hostvars[groups['psqlserver'][0]]['ansible_host'] }}/32    md5
+              - host    all             all             {{ hostvars[groups['psqlserver'][1]]['ansible_host'] }}/32    md5
+              - host    all             all             {{ hostvars[groups['psqlserver'][2]]['ansible_host'] }}/32    md5
+              - host    all             all             {{ VIP }}/32          md5
+              - host    all             all             {{ CLUSTER_NET }}     md5
+          
+          postgresql:
+            listen: 0.0.0.0:5432
+            connect_address: {{ ansible_host }}:5432
+            data_dir: /var/lib/postgresql/11/main
+            bin_dir: /usr/lib/postgresql/11/bin
+            pgpass: /var/lib/postgresql/.pgpass_patroni
+            authentication:
+              superuser:
+                username: super_role
+                password: {{ pass_postgres }}
+              replication:
+                username: replica_role
+                password: {{ pass_repl }}
+              rewind:
+                username: rewind_role
+                password: rewind
+            parameters:
+              unix_socket_directories: '/var/run/postgresql'
+          
+          tags:
+            nofailover: false
+            noloadbalance: false
+            clonefrom: false
+        owner: postgres
+        group: postgres
+        mode: '0640'
+
+- name: 12. Initialize first Patroni node (will become master)
+  hosts: psql1server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Clean PostgreSQL data directory
+      ansible.builtin.shell: rm -rf /var/lib/postgresql/11/main/*
+      args:
+        executable: /bin/bash
+
+    - name: Start Patroni on first node
+      ansible.builtin.shell: |
+        systemctl daemon-reload
+        systemctl restart patroni.service &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+
+    - name: Wait for Patroni REST API
+      ansible.builtin.wait_for:
+        port: 8008
+        host: "{{ ansible_host }}"
+        timeout: 120
+        delay: 10
+
+    - name: Wait for PostgreSQL initialization
+      ansible.builtin.pause:
+        seconds: 20
+
+- name: 13. Ensure postgres role exists in database
+  hosts: psql1server
+  become: true
+  become_user: postgres
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Create postgres role if not exists
+      ansible.builtin.shell: |
+        psql -U super_role -d postgres << 'SQL'
+        DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'postgres') THEN
+            CREATE ROLE postgres WITH SUPERUSER CREATEDB CREATEROLE LOGIN REPLICATION PASSWORD '{{ pass_postgres }}';
+            COMMENT ON ROLE postgres IS 'Default PostgreSQL superuser';
+          END IF;
+        END
+        $$;
+        SQL
+      args:
+        executable: /bin/bash
+
+- name: 14. Start Patroni on replica nodes
+  hosts: psql2server,psql3server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Clean PostgreSQL data directory
+      ansible.builtin.shell: rm -rf /var/lib/postgresql/11/main/*
+      args:
+        executable: /bin/bash
+
+    - name: Start Patroni on replica
+      ansible.builtin.shell: |
+        systemctl daemon-reload
+        systemctl restart patroni.service &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+
+    - name: Wait for Patroni to start replicating
+      ansible.builtin.pause:
+        seconds: 30
+
+# ==================== VERIFICATION ====================
+
+- name: 15. Verify Patroni cluster status
+  hosts: psql1server
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Check Patroni cluster
+      ansible.builtin.shell: patronictl -c /etc/patroni/config.yml list
+      args:
+        executable: /bin/bash
+      register: cluster_status
+      until: cluster_status.rc == 0 and 'running' in cluster_status.stdout
+      retries: 30
+      delay: 10
+
+    - name: Display cluster status
+      ansible.builtin.debug:
+        var: cluster_status.stdout_lines
+
+- name: 16. Test leader check script
+  hosts: psqlserver
+  become: true
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Run leader check
+      ansible.builtin.shell: |
+        /etc/keepalived/leader_check.sh && echo "MASTER" || echo "REPLICA"
+      args:
+        executable: /bin/bash
+      register: role
+
+    - name: Check VIP
+      ansible.builtin.shell: |
+        ip addr show | grep "{{ VIP }}" || echo "VIP not here"
+      args:
+        executable: /bin/bash
+      register: vip
+
+    - name: Display status
+      ansible.builtin.debug:
+        msg:
+          - "Node {{ ansible_host }}: {{ role.stdout_lines[-1] }} | VIP {{ VIP }}: {{ 'ACTIVE' if VIP in vip.stdout else 'STANDBY' }}"
+
+- name: 17. Final summary
+  hosts: localhost
+  connection: local
+  vars_files:
+    - '../../settings.yml'
+  tasks:
+    - name: Show deployment summary
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "     PATRONI CLUSTER DEPLOYMENT COMPLETE     "
+          - "============================================"
+          - ""
+          - "System users created:"
+          - "  postgres (password set)"
+          - "  super_role (locked)"
+          - "  replica_role (locked)"
+          - "  rewind_role (locked)"
+          - ""
+          - "ETCD Cluster:"
+          - "  {{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379"
+          - "  {{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379"
+          - "  {{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2379"
+          - ""
+          - "PostgreSQL/Patroni Cluster:"
+          - "  Master:  {{ hostvars[groups['psqlserver'][0]]['ansible_host'] }}:5432"
+          - "  Replica: {{ hostvars[groups['psqlserver'][1]]['ansible_host'] }}:5432"
+          - "  Replica: {{ hostvars[groups['psqlserver'][2]]['ansible_host'] }}:5432"
+          - "  VIP:     {{ VIP }}:5432 (follows master via keepalived + leader_check.sh)"
+          - ""
+          - "Keepalived:"
+          - "  Script: /etc/keepalived/leader_check.sh (checks Patroni /primary API)"
+          - "  VIP {{ VIP }} active on current master node"
+          - ""
+          - "Database users:"
+          - "  postgres (superuser): {{ pass_postgres }}"
+          - "  super_role (superuser): {{ pass_postgres }}"
+          - "  replica_role (replication): {{ pass_repl }}"
+          - "  rewind_role: rewind"
+          - ""
+          - "Connect via VIP:"
+          - "  psql -h {{ VIP }} -U postgres -d postgres"
+          - "  psql -h {{ VIP }} -U super_role -d postgres"
+          - ""
+          - "Check cluster:"
+          - "  patronictl -c /etc/patroni/config.yml list"
+          - "  etcdctl --endpoints=http://{{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2379 endpoint status --cluster"
+          - "  ip addr show | grep {{ VIP }}"
+          - "============================================"

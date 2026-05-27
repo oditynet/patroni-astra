@@ -1,0 +1,5 @@
+pass_repl: "Inc0gn1t0"
+pass_postgres: "postgres"
+pass_ejabberd: "Inc0gn1t0"
+VIP: 10.4.4.218
+CLUSTER_NET: "10.4.4.0/24"
