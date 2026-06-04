@@ -1,22 +1,41 @@
-#Astra 1.7.5 common and smolensk + | Online установка: + | Offline - надо скопировать все пакеты локально и написать сценарий установки
-#RedOS 8 +
 ---
-# deploy_patroni_cluster.yml
-# Полный playbook для развертывания Patroni кластера с etcd и keepalived
-
 - name: 1. Prepare all nodes - Create users and install packages
   hosts: psqlserver
   become: true
+  gather_facts: yes
   vars_files:
     - './settings.yml'
   tasks:
+    - name: "Проверить переменную DATA"
+      fail:
+         msg: "Переменная DATA не определена или пуста!"
+      when: 
+      - DATA is not defined or DATA | length == 0
+ 
+    - name: "Проверить переменную P_VER"
+      fail:
+         msg: "Переменная P_VER не определена или пуста!"
+      when: 
+      - P_VER is not defined or P_VER | length == 0
+
+    - name: "Проверить существование сетевого интерфейса {{ ETH_VIP }}"
+      fail:
+        msg: |
+           ❌ Сетевой интерфейс '{{ ETH_VIP }}' не найден в системе!
+           Доступные интерфейсы: {{ ansible_interfaces | join(', ') }}
+      when: 
+      - ETH_VIP is defined
+      - ETH_VIP not in ansible_interfaces
+
+ 
     - name: APT | Remove cdrom from sources.list
       ansible.builtin.replace:
         path: /etc/apt/sources.list
         regexp: '^deb cdrom.*'
         replace: ''
       when: ansible_facts['distribution'] == "Astra Linux" 
-      
+
+ 
     - name: Create postgres system user
       ansible.builtin.user:
         name: postgres
@@ -26,14 +45,6 @@
         home: /home/postgres
         state: present
       ignore_errors: yes
-
-#    - name: Create super_role system user
-#      ansible.builtin.user:
-#        name: super_role
-#        password: '!'
-#        shell: /bin/bash
-#        create_home: yes
-#        state: present
 
     - name: Create replica_role system user
       ansible.builtin.user:
@@ -58,7 +69,7 @@
         cat > /etc/yum.repos.d/pgpro-cert.repo << EOF
         [postgrespro-crt]
         name=Postgres Pro Cert repository
-        baseurl=file:///opt/pgpro-cert-redos/{{ REDOS_VER }}/os/x86_64/rpms
+        baseurl=file:///opt/pgpro-cert-redos/{{ ansible_distribution_version }}/os/x86_64/rpms
         gpgcheck=0
         enabled=1
 
@@ -67,18 +78,52 @@
         executable: /bin/bash
       when:
         - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS" 
-        - ansible_facts['distribution_major_version'] in ["7", "8"]
+        - ansible_facts['distribution_major_version'] == "7"
+
+    - name: DNF | MkRepository for PostgreSQL pro 
+      ansible.builtin.shell: |
+        mkdir /opt/pgpro-cert-redos
+        
+        cat > /etc/yum.repos.d/pgpro-cert.repo << EOF
+        [postgrespro-crt]
+        name=Postgres Pro Cert repository
+        baseurl=file:///opt/pgpro-cert-redos/{{ ansible_distribution_major_version }}/os/x86_64/rpms
+        gpgcheck=0
+        enabled=1
+
+        EOF
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS" 
+        - ansible_facts['distribution_major_version'] == "8"
 
     - name: APT | MkRepository for PostgreSQL pro
       ansible.builtin.shell: |
         mkdir /opt/pgpro-cert-astra
         cat > /etc/apt/sources.list.d/pgpro-cert.list << EOF
-        deb [trusted=yes] file:///opt/pgpro-cert-astra/{{ ASTRA_VER }}/ {{ ASTRA_VER }}_x86-64 main
+        deb [trusted=yes] file:///opt/pgpro-cert-astra/1.7/ 1.7_x86-64 main
 
         EOF
       args:
         executable: /bin/bash
-      when: ansible_facts['distribution'] == "Astra Linux"
+      when: 
+         - ansible_facts['distribution'] == "Astra Linux"
+         - ansible_distribution_release.startswith("1.7")
+
+
+    - name: APT | MkRepository for PostgreSQL pro
+      ansible.builtin.shell: |
+        mkdir /opt/pgpro-cert-astra
+        cat > /etc/apt/sources.list.d/pgpro-cert.list << EOF
+        deb [trusted=yes] file:///opt/pgpro-cert-astra/1.8/ 1.8_x86-64 main
+
+        EOF
+      args:
+        executable: /bin/bash
+      when: 
+         - ansible_facts['distribution'] == "Astra Linux"
+         - ansible_distribution_release.startswith("1.8")
 
     - name: APT | Key PostgresPro import
       ansible.builtin.apt_key:
@@ -245,7 +290,6 @@
         setfacl -m u:postgres:rx /etc/parsec/capdb 2>/dev/null || true
         pdpl-user -l 0:0 postgres 2>/dev/null || true
         pdpl-user -l 0:0 replica_role 2>/dev/null || true
-#        pdpl-user -l 0:0 super_role 2>/dev/null || true
       args:
         executable: /bin/bash
       when: ansible_facts['distribution'] == "Astra Linux"
@@ -253,7 +297,7 @@
     - name: Config | Selinux off
       ansible.builtin.shell: |
         sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
-        setenforce 0
+        setenforce 0 || true
       ignore_errors: true
       args:
         executable: /bin/bash
@@ -265,7 +309,6 @@
     - name: Stop and disable standard PostgreSQL
       ansible.builtin.shell: |
         systemctl stop postgrespro-std-{{ P_VER }} 2>/dev/null || true
-        systemctl disable postgrespro-std-{{ P_VER }} 2>/dev/null || true
       args:
         executable: /bin/bash
 
@@ -280,35 +323,84 @@
         systemctl stop keepalived 2>/dev/null || true
       args:
         executable: /bin/bash
-    
+
     - name: Stop etcd if running
       ansible.builtin.shell: |
         systemctl stop etcd 2>/dev/null || true
       args:
         executable: /bin/bash
-   
-    - name: DELETE WAL, PGDATA
+
+    - name: DELETE  PGDATA
       ansible.builtin.shell: |
         rm -rf "{{ DATA }}"/*
+      args:
+        executable: /bin/bash
+      when: 
+       - DATA is defined
+       - DATA | length > 0
+       - DATA != ""
+
+    - name: DELETE WAL
+      ansible.builtin.shell: |
         rm -rf "{{ WAL }}"/*
       args:
         executable: /bin/bash
+      when: 
+       - WAL is defined
+       - WAL | length > 0
+       - WAL != ""
 
-    - name: "Создать директории PostgreSQL с правами"
+
+#    - name: "Создать директории PostgreSQL с правами"
+#      ansible.builtin.file:
+#        path: "{{ item.path }}"
+#        state: directory
+#        mode: "{{ item.mode }}"
+#        owner: postgres
+#        group: postgres
+#        recurse: "{{ item.recurse | default(false) }}"
+#      loop:
+#       - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}", mode: "0750", recurse: false , skip_if_empty: true }
+#       - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}/main/conf.d", mode: "0750", recurse: false , skip_if_empty: true }
+#       - { path: "{{ WAL }}/pgpro-cert-{{ P_VER }}", mode: "0750", recurse: false , skip_if_empty: true }
+#       - { path: "{{ DATA }}", mode: "0700", recurse: true , skip_if_empty: true }
+#       - { path: "{{ WAL }}", mode: "0700", recurse: true , skip_if_empty: true }
+#      when: 
+#       - not (item.skip_if_empty | default(false))
+#       - item.path | length > 0
+
+    - name: "Создать основные директории PostgreSQL"
       ansible.builtin.file:
-        path: "{{ item.path }}"
+         path: "{{ item.path }}"
+         state: directory
+         mode: "{{ item.mode }}"
+         owner: postgres
+         group: postgres
+         recurse: "{{ item.recurse | default(false) }}"
+      loop:
+        - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}", mode: "0750" }
+        - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}/main/conf.d", mode: "0750" }
+        - { path: "{{ DATA }}", mode: "0700", recurse: true }
+      when: 
+       - DATA is defined
+       - DATA | length > 0
+       - DATA != ""
+
+    - name: "Создать WAL-директории (если WAL определена)"
+      ansible.builtin.file:
+        path: "{{ item }}"
         state: directory
-        mode: "{{ item.mode }}"
+        mode: "0750"
         owner: postgres
         group: postgres
-        recurse: "{{ item.recurse | default(false) }}"
       loop:
-       - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}", mode: "0750", recurse: false }
-       - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}/main/conf.d", mode: "0750", recurse: false }
-       - { path: "{{ WAL }}/pgpro-cert-{{ P_VER }}", mode: "0750", recurse: false }
-       - { path: "{{ DATA }}", mode: "0700", recurse: true }
-       - { path: "{{ WAL }}", mode: "0700", recurse: true }
-    
+       - "{{ WAL }}/pgpro-cert-{{ P_VER }}"
+       - "{{ WAL }}"
+      when: 
+       - WAL is defined
+       - WAL | length > 0
+       - WAL != ""
+
     - name: Create required directories
       ansible.builtin.file:
         path: "{{ item }}"
@@ -318,7 +410,6 @@
         mode: '0750'
       loop:
         - /var/log/patroni
-#        - /var/lib/postgresql/{{ P_VER }}/main
         - /var/run/postgresql
 
 
@@ -973,13 +1064,13 @@
         chdir: /etc/patroni
     
 
-    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
-      ansible.builtin.shell: |
-        systemctl disable --now postgrespro-std-{{ P_VER }}.service
-        #systemctl restart patroni.service
-        # rm -rf /var/lib/postgresql/15/main/*
-      args:
-        executable: /bin/bash
+#    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
+#      ansible.builtin.shell: |
+#        systemctl disable --now postgrespro-std-{{ P_VER }}.service
+#        #systemctl restart patroni.service
+#        # rm -rf /var/lib/postgresql/15/main/*
+#      args:
+#        executable: /bin/bash
 
 #    - name: Get Patroni replication status.
 #      command: patronictl -c /etc/patroni/config.yml list
@@ -1026,13 +1117,13 @@
         chdir: /etc/patroni
     
 
-    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
-      ansible.builtin.shell: |
-        systemctl disable --now  postgrespro-std-{{ P_VER }}.service
-        #systemctl restart patroni.service
-        # rm -rf /var/lib/postgresql/15/main/*
-      args:
-        executable: /bin/bash
+#    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
+#      ansible.builtin.shell: |
+#        systemctl disable --now  postgrespro-std-{{ P_VER }}.service
+#        #systemctl restart patroni.service
+#        # rm -rf /var/lib/postgresql/15/main/*
+#      args:
+#        executable: /bin/bash
 
 #    - name: Get Patroni replication status.
 #      command: patronictl -c /etc/patroni/config.yml list
@@ -1081,13 +1172,13 @@
         chdir: /etc/patroni
     
 
-    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
-      ansible.builtin.shell: |
-        systemctl disable --now  postgrespro-std-{{ P_VER }}.service
-        #systemctl restart patroni.service
-        # rm -rf /var/lib/postgresql/15/main/*
-      args:
-        executable: /bin/bash
+#    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
+#      ansible.builtin.shell: |
+#        systemctl disable --now  postgrespro-std-{{ P_VER }}.service
+#        #systemctl restart patroni.service
+#        # rm -rf /var/lib/postgresql/15/main/*
+#      args:
+#        executable: /bin/bash
 
 #    - name: Get Patroni replication status.
 #      command: patronictl -c /etc/patroni/config.yml list
@@ -1101,12 +1192,13 @@
   vars_files:
     - './settings.yml'
   tasks:
-    - name: Clean PostgreSQL data directory
-      ansible.builtin.shell: |
-        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
-        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
-      args:
-        executable: /bin/bash
+#!!!!! Убрал сейчас
+#    - name: Clean PostgreSQL data directory
+#      ansible.builtin.shell: |
+#        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
+#        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
+#      args:
+#        executable: /bin/bash
 
     - name: Start Patroni on first node
       ansible.builtin.shell: systemctl restart patroni.service &
@@ -1126,29 +1218,6 @@
       ansible.builtin.pause:
         seconds: 20
 
-#- name: 13. Ensure postgres role exists in database
-#  hosts: psql1server
-#  become: true
-#  become_user: postgres
-#  vars_files:
-#    - './settings.yml'
-#  tasks:
-#    - name: Create postgres role if not exists
-#      ansible.builtin.shell: |
-#        psql -U super_role -d postgres << 'SQL'
-#        DO $$
-#        BEGIN
-#          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'postgres') THEN
-#            CREATE ROLE postgres WITH SUPERUSER CREATEDB CREATEROLE LOGIN REPLICATION PASSWORD '{{ pass_postgres }}';
-#            COMMENT ON ROLE postgres IS 'Default PostgreSQL superuser';
-#          END IF;
-#        END
-#        $$;
-#        SQL
-#      args:
-#        executable: /bin/bash
-#      when: ansible_facts['distribution'] == "Astra Linux" 
- 
 
 - name: 14.1. Start Patroni on replica nodes
   hosts: psql2server
@@ -1156,12 +1225,12 @@
   vars_files:
     - './settings.yml'
   tasks:
-    - name: Clean PostgreSQL data directory
-      ansible.builtin.shell: |
-        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
-        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
-      args:
-        executable: /bin/bash
+#    - name: Clean PostgreSQL data directory
+#      ansible.builtin.shell: |
+#        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
+#        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
+#      args:
+#        executable: /bin/bash
 
     - name: Start Patroni on replica
       ansible.builtin.shell: systemctl restart patroni.service &
@@ -1181,12 +1250,12 @@
   vars_files:
     - './settings.yml'
   tasks:
-    - name: Clean PostgreSQL data directory
-      ansible.builtin.shell: |
-        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
-        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
-      args:
-        executable: /bin/bash
+#    - name: Clean PostgreSQL data directory
+#      ansible.builtin.shell: |
+#        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
+#        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
+#      args:
+#        executable: /bin/bash
 
     - name: Start Patroni on replica
       ansible.builtin.shell: systemctl restart patroni.service &
@@ -1213,7 +1282,7 @@
         executable: /bin/bash
       register: cluster_status
       until: cluster_status.rc == 0 and 'running' in cluster_status.stdout
-      retries: 30
+      retries: 10
       delay: 10
 
     - name: Display cluster status
@@ -1258,12 +1327,6 @@
           - "     PATRONI CLUSTER DEPLOYMENT COMPLETE     "
           - "============================================"
           - ""
-          - "System users created:"
-          - "  postgres (password set)"
-#          - "  super_role (locked)"
-          - "  replica_role (locked)"
-          - "  rewind_role (locked)"
-          - ""
           - "ETCD Cluster:"
           - "  {{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379"
           - "  {{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379"
@@ -1280,17 +1343,14 @@
           - "  VIP {{ VIP }} active on current master node"
           - ""
           - "Database users:"
-#          - "  postgres (superuser): {{ pass_postgres }}"
           - "  super_role (superuser): {{ pass_postgres }}"
           - "  replica_role (replication): {{ pass_repl }}"
           - "  rewind_role: rewind"
           - ""
           - "Connect via VIP:"
           - "  psql -h {{ VIP }} -U postgres -d postgres"
-#          - "  psql -h {{ VIP }} -U super_role -d postgres"
           - ""
           - "Check cluster:"
           - "  patronictl -c /etc/patroni/config.yml list"
           - "  etcdctl --endpoints=http://{{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2379 endpoint status --cluster"
-          - "  ip addr show | grep {{ VIP }}"
           - "============================================"
