@@ -750,9 +750,9 @@
         EOF
       args:
         executable: /bin/bash
-      when:
-        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
-        - ansible_facts['distribution_major_version'] in ["7", "8"]
+      when: 
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS" 
+        - ansible_facts['distribution_major_version'] in ["7", "8"] 
 
 - name: 7. DNF | Configure etcd on 2 nodes
   hosts: etcd2server
@@ -781,8 +781,10 @@
         EOF
       args:
         executable: /bin/bash
-      when:
-        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"               - ansible_facts['distribution_major_version'] in ["7", "8"]
+      when: 
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS" 
+        - ansible_facts['distribution_major_version'] in ["7", "8"] 
+
 
 - name: 7. DNF | Configure etcd on 3 nodes
   hosts: etcd3server
@@ -938,21 +940,10 @@
   vars_files:
     - './settings.yml'
   tasks:
-    - name: "Получить системную локаль"
-      shell: locale -a | grep -E '\.utf8' | head -1
-      register: system_locale
-      changed_when: false
-      when: ansible_facts['distribution'] == "Astra Linux" 
- 
 
-    - name: "DNF | Получить системную локаль"
+    - name: " Получить системную локаль"
       shell: localectl |grep "System Locale"|awk -F "=" '{print $2}'
       register: system_locale
-      changed_when: false
-      when:
-        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
-        - ansible_facts['distribution_major_version'] in ["7", "8"]
-
 
     - name: Config patroni. WAL enable
       ansible.builtin.shell: |
@@ -1001,20 +992,10 @@
   vars_files:
     - './settings.yml'
   tasks:
-    - name: "Получить системную локаль"
-      shell: locale -a | grep -E '\.utf8' | head -1
-      register: system_locale
-      changed_when: false
-      when: ansible_facts['distribution'] == "Astra Linux" 
- 
 
-    - name: "DNF | Получить системную локаль"
+    - name: " Получить системную локаль"
       shell: localectl |grep "System Locale"|awk -F "=" '{print $2}'
       register: system_locale
-      changed_when: false
-      when:
-        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
-        - ansible_facts['distribution_major_version'] in ["7", "8"]
 
     - name: Config patroni. WAL enable
       ansible.builtin.shell: |
@@ -1066,20 +1047,10 @@
   vars_files:
     - './settings.yml'
   tasks:
-    - name: "Получить системную локаль"
-      shell: locale -a | grep -E '\.utf8' | head -1
-      register: system_locale
-      changed_when: false
-      when: ansible_facts['distribution'] == "Astra Linux" 
- 
 
-    - name: "DNF | Получить системную локаль"
+    - name: " Получить системную локаль"
       shell: localectl |grep "System Locale"|awk -F "=" '{print $2}'
       register: system_locale
-      changed_when: false
-      when:
-        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
-        - ansible_facts['distribution_major_version'] in ["7", "8"]
 
     - name: Config patroni. WAL enable
       ansible.builtin.shell: |
