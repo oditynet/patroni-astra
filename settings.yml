@@ -1,5 +1,21 @@
-pass_repl: "postgres"
+pass_repl: "replicator"
 pass_postgres: "postgres"
-pass_ejabberd: "postgres"
-VIP: 10.4.4.218
+
+ #Keepalived
+VIP: "10.4.4.218"
 CLUSTER_NET: "10.4.4.0/24"
+ETH_VIP: "ens192"
+
+#версия репозитория смоленска 1.7 \ 1.8
+ASTRA_VER: "1.7"
+
+#версия репозитория редОС 7.3 \ 8 смотрим какую папку с репозиторием мы скопируем в /opt/pgpro-cert-*/(7.3\8\1.7 ?????)
+REDOS_VER: "7.3"
+
+#PostgresPro ver 14\15\16\17\18
+P_VER: "17"
+
+#Path postgres
+DATA: "/pgdata"
+#WAL если пустой то не используется в работе.
+WAL: "/pgwal"

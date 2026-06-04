@@ -1,3 +1,5 @@
+#Astra 1.7.5 common and smolensk + | Online установка: + | Offline - надо скопировать все пакеты локально и написать сценарий установки
+#RedOS 8 +
 ---
 # deploy_patroni_cluster.yml
 # Полный playbook для развертывания Patroni кластера с etcd и keepalived
@@ -6,30 +8,32 @@
   hosts: psqlserver
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: APT | Remove cdrom from sources.list
       ansible.builtin.replace:
         path: /etc/apt/sources.list
         regexp: '^deb cdrom.*'
         replace: ''
-
+      when: ansible_facts['distribution'] == "Astra Linux" 
+      
     - name: Create postgres system user
       ansible.builtin.user:
         name: postgres
-        password: "{{ pass_postgres | password_hash('sha512') }}"
+        password: "!"
         shell: /bin/bash
         create_home: yes
-        home: /var/lib/postgresql
+        home: /home/postgres
         state: present
+      ignore_errors: yes
 
-    - name: Create super_role system user
-      ansible.builtin.user:
-        name: super_role
-        password: '!'
-        shell: /bin/bash
-        create_home: yes
-        state: present
+#    - name: Create super_role system user
+#      ansible.builtin.user:
+#        name: super_role
+#        password: '!'
+#        shell: /bin/bash
+#        create_home: yes
+#        state: present
 
     - name: Create replica_role system user
       ansible.builtin.user:
@@ -46,6 +50,71 @@
         shell: /bin/bash
         create_home: yes
         state: present
+    
+    - name: DNF | MkRepository for PostgreSQL pro 
+      ansible.builtin.shell: |
+        mkdir /opt/pgpro-cert-redos
+        
+        cat > /etc/yum.repos.d/pgpro-cert.repo << EOF
+        [postgrespro-crt]
+        name=Postgres Pro Cert repository
+        baseurl=file:///opt/pgpro-cert-redos/{{ REDOS_VER }}/os/x86_64/rpms
+        gpgcheck=0
+        enabled=1
+
+        EOF
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS" 
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+    - name: APT | MkRepository for PostgreSQL pro
+      ansible.builtin.shell: |
+        mkdir /opt/pgpro-cert-astra
+        cat > /etc/apt/sources.list.d/pgpro-cert.list << EOF
+        deb [trusted=yes] file:///opt/pgpro-cert-astra/{{ ASTRA_VER }}/ {{ ASTRA_VER }}_x86-64 main
+
+        EOF
+      args:
+        executable: /bin/bash
+      when: ansible_facts['distribution'] == "Astra Linux"
+
+    - name: APT | Key PostgresPro import
+      ansible.builtin.apt_key:
+        data: |
+          -----BEGIN PGP PUBLIC KEY BLOCK-----
+          
+          mQENBFWdEjABCAC6QeLt0UJUQlDI2Z+R/y1OyOMU+5Te176I0+/Xpc2v5NsucW2M
+          kLTdOif0iW+q5h1djL+Pc5yu1fojZCvcihhbURnWECF52BmRnOC9jI0eTHq3fcPZ
+          IE3gqMJSn5sx2kJZ7n8XE0RbQ/hr51BLI+lzeqR3JAKBIqpVDKRrdP9Y1xVR/7Ne
+          q4FNR+osm6W4sM9G+TA/YADrWX3/TPXA4AN+2uNCNY0wK7em8V0oSZJVpEzvu5EP
+          djC6GX08XSvhPNo52o3u3tpFWH7ICw2BEYe672bJTjmi8wFgPW04pw49Jpvw4i1R
+          RhkpQqQ/b9bSveoNpvN32ElAJSaize76+q/TABEBAAG0KlJvYm90IChTaWduaW5n
+          IHJlcG9zKSA8ZGJhQHBvc3RncmVzcHJvLnJ1PokBOAQTAQIAIgUCVZ0SMAIbAwYL
+          CQgHAwIGFQgCCQoLBBYCAwECHgECF4AACgkQf5rlpi0t8LQpKQgAuJkOKNdnCSCt
+          GbNTwAbk414UPYa2B1M1DD6MfcSd6NnJNBVtRoaSWWISQB6gP+/w1jmD8XZbj/oH
+          5HAHjOyh9Lb3z1xeMIQnBnfGtcqmU5QrF55Yi0H9G0s+fn9oodfNXqAa/zARpBw6
+          q3LRSBCjT50/XA5G3AzUr7fIDb68FmEOCQukzs0uWBr5fkrRC21b1DcuhzbBay8X
+          pnlpB+Ma1PTIFgRdRl/KwYTzO80TWFMCeYfXQRh8StuQxRcVCqnv4F6seHqmbL7A
+          vOZ7GMymsz/IRHGVk4eVC6/94Y3vkV/0eQ+Yom+NtAFnep6G4OhxIeviZ697eFYF
+          +j4YsyDD+rkBDQRVnRIwAQgAn/CTmnv2+ZUJNzYvXs0JGDZv2ZgQRmt5NrSFvcNn
+          P4adEJB+Mf0vkTvQNHbMZy2adeFIbu/S5TFt8mIbSGq87wrSSssdnYJbeUWrfiIh
+          GNpKPPs1H+Jvt9UkBj5UhGNZG+DKKVIIXd62pQmOfeTMf1nUw1wmnLhZUxGV6cDJ
+          MkNsa1jlq4+RETyoC0CniY5JBbPDi6TBUfTks4c6FcBei+YauTz2zKXt7o7cYxM8
+          2wQ+tm4IeE0chYSFwDXy3UPd8Eo3aKS+Ag6HKXZbNtAOyTeGuOlNP2BiI/l5SEfx
+          EVZQElf1ukoYQlPqulq8eZWssi04koro0sKTrQFdsZPyeQARAQABiQEfBBgBAgAJ
+          BQJVnRIwAhsMAAoJEH+a5aYtLfC0jaIH/1x2HpPGjh0jaMGMvqSjAgYAqargh6ar
+          /Db0/7rUbzeQNxoo3CcrOyCFMpfoymiDu1fam9iGASd2RZY66c5sj9wIKhcbb+XM
+          qTvY/GIMAvBg0X/aLOs5Cebts4S1/GHGQm+ncjCjUOxklqUIkv8N6sKdBCgaDODh
+          KUvKaMHlhw/zFc3gTJ9HO2gbg0IBVhzGSX9nf6DWZVLw0Gij0zpljRgIEGqA+pCe
+          J64zrJy3VitT94GaJoOrhCmHog4AkUb55r9ui0ovjepsvCzlEaMZgyWrg1atgXzH
+          edncmwDmPmiy7+GuqBCRJ1+ut4//e5C9gQt8A1aNCCzS9He3PwTH9ks=
+          =tBt6
+          -----END PGP PUBLIC KEY BLOCK-----
+        state: present
+      when: ansible_facts['distribution'] == "Astra Linux"
+
 
     - name: APT | Uncomment repositories
       ansible.builtin.replace:
@@ -55,16 +124,51 @@
       loop:
         - base
         - extended
+      when: ansible_facts['distribution'] == "Astra Linux"
+      
+    - name: Поставить выполнение на паузу до нажатия Enter
+      ansible.builtin.pause:
+        prompt: "scp -r 1.7 user@ip:/home/user -> /opt/pgpro-cert-astra/ ...Press Enter"
 
-    - name: APT | Update cache
-      ansible.builtin.apt:
-        update_cache: yes
-
+#    - name: "Скопировать .deb файл на ноду"
+#      copy:
+#        src: "python-apt_1.8.4.3.astra2+ci1_amd64.deb"
+#        dest: "/tmp/python-apt.deb"
+#        mode: '0644'
+#      when: ansible_facts['distribution'] == "Astra Linux"
+#      
+#
+#    - name: "Скопировать .deb файл на ноду"
+#      copy:
+#        src: "python-apt-common_1.8.4.3.astra2+ci1_all.deb"
+#        dest: "/tmp/python-apt-common.deb"
+#        mode: '0644'
+#      when: ansible_facts['distribution'] == "Astra Linux"
+#      
+#
+#
+#    - name: "Установить пакет из .deb файла"
+#      shell: dpkg -i /tmp/python-apt.deb /tmp/python-apt-common.deb
+#      when: ansible_facts['distribution'] == "Astra Linux"
+#      
+#
+#    - name: "Обновить список пакетов"
+#      apt:
+#        update_cache: yes
+#      when: ansible_facts['distribution'] == "Astra Linux"
+      
+          #Пакеты все нужны: и для патрони python-* тоже
     - name: APT | Install required packages
       ansible.builtin.apt:
         name:
-          - postgresql
-          - postgresql-client
+          - vim
+          - postgrespro-std-{{ P_VER }}
+          - postgrespro-std-{{ P_VER }}-server
+          - postgrespro-std-{{ P_VER }}-client 
+          - postgrespro-std-{{ P_VER }}-libs
+          - postgrespro-std-{{ P_VER }}-contrib
+#          - postgresql
+#          - postgresql-client
           - python-psycopg2
           - python3-psycopg2
           - acl
@@ -82,7 +186,54 @@
           - iptables
           - iptables-persistent
         state: present
+        update_cache: yes
+      when: ansible_facts['distribution'] == "Astra Linux"
+      
+    - name: DNF | Install required packages
+      ansible.builtin.yum:
+        name:
+          - vim
+          - postgrespro-std-{{ P_VER }}
+          - postgrespro-std-{{ P_VER }}-server
+          - postgrespro-std-{{ P_VER }}-client 
+          - postgrespro-std-{{ P_VER }}-libs
+            # - postgrespro-std-{{ P_VER }}-contrib
+          - patroni-etcd
+          - etcd
+          - keepalived
+          - python3-libselinux
 
+#          - postgresql
+#          - postgresql-client
+#          - python-psycopg2
+#          - python3-psycopg2
+#          - acl
+#          - python-ipaddress
+#          - python3-pexpect
+#          - python-pexpect
+#          - python-pkg-resources
+#          - python3-pkg-resources
+#          - etcd-server
+#          - etcd-client
+#          - patroni
+#          - python3-consul
+#          - python3-etcd
+#          - keepalived
+#          - iptables
+#          - iptables-persistent
+        state: present
+        update_cache: yes
+      when: 
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS" 
+        - ansible_facts['distribution_major_version'] in ["7", "8"] 
+      
+    - name: Убрать /etc/hosts из под управления cloud init
+      ansible.builtin.lineinfile:
+        path: /etc/cloud/cloud.cfg
+        regexp: 'update_etc_hosts'
+        state: absent
+      ignore_errors: yes 
+      
     - name: Config | Give postgres user rights to read mandatory access control database
       ansible.builtin.shell: |
         usermod -a -G shadow postgres
@@ -94,14 +245,27 @@
         setfacl -m u:postgres:rx /etc/parsec/capdb 2>/dev/null || true
         pdpl-user -l 0:0 postgres 2>/dev/null || true
         pdpl-user -l 0:0 replica_role 2>/dev/null || true
-        pdpl-user -l 0:0 super_role 2>/dev/null || true
+#        pdpl-user -l 0:0 super_role 2>/dev/null || true
       args:
         executable: /bin/bash
+      when: ansible_facts['distribution'] == "Astra Linux"
+     
+    - name: Config | Selinux off
+      ansible.builtin.shell: |
+        sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+        setenforce 0
+      ignore_errors: true
+      args:
+        executable: /bin/bash
+      when: 
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS" 
+        - ansible_facts['distribution_major_version'] in ["7", "8"] 
+      
 
     - name: Stop and disable standard PostgreSQL
       ansible.builtin.shell: |
-        systemctl stop postgresql 2>/dev/null || true
-        systemctl disable postgresql 2>/dev/null || true
+        systemctl stop postgrespro-std-{{ P_VER }} 2>/dev/null || true
+        systemctl disable postgrespro-std-{{ P_VER }} 2>/dev/null || true
       args:
         executable: /bin/bash
 
@@ -116,7 +280,35 @@
         systemctl stop keepalived 2>/dev/null || true
       args:
         executable: /bin/bash
+    
+    - name: Stop etcd if running
+      ansible.builtin.shell: |
+        systemctl stop etcd 2>/dev/null || true
+      args:
+        executable: /bin/bash
+   
+    - name: DELETE WAL, PGDATA
+      ansible.builtin.shell: |
+        rm -rf "{{ DATA }}"/*
+        rm -rf "{{ WAL }}"/*
+      args:
+        executable: /bin/bash
 
+    - name: "Создать директории PostgreSQL с правами"
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+        owner: postgres
+        group: postgres
+        recurse: "{{ item.recurse | default(false) }}"
+      loop:
+       - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}", mode: "0750", recurse: false }
+       - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}/main/conf.d", mode: "0750", recurse: false }
+       - { path: "{{ WAL }}/pgpro-cert-{{ P_VER }}", mode: "0750", recurse: false }
+       - { path: "{{ DATA }}", mode: "0700", recurse: true }
+       - { path: "{{ WAL }}", mode: "0700", recurse: true }
+    
     - name: Create required directories
       ansible.builtin.file:
         path: "{{ item }}"
@@ -126,22 +318,14 @@
         mode: '0750'
       loop:
         - /var/log/patroni
-        - /var/lib/postgresql/11/main
+#        - /var/lib/postgresql/{{ P_VER }}/main
         - /var/run/postgresql
 
-    - name: Create conf.d directory
-      ansible.builtin.file:
-        path: /var/lib/postgresql/11/main/conf.d
-        state: directory
-        owner: postgres
-        group: postgres
-        mode: '0750'
 
     - name: Create pgpass file for Patroni
       ansible.builtin.copy:
-        dest: /var/lib/postgresql/.pgpass_patroni
+        dest: "/home/postgres/.pgpass_patroni"
         content: |
-          *:*:*:super_role:{{ pass_postgres }}
           *:*:*:postgres:{{ pass_postgres }}
           *:*:replication:replica_role:{{ pass_repl }}
           *:*:*:rewind_role:rewind
@@ -149,13 +333,6 @@
         group: postgres
         mode: '0600'
 
-    - name: Find network interface
-      ansible.builtin.set_fact:
-        iface: "{{ item }}"
-      loop: "{{ ansible_facts.interfaces }}"
-      when: 
-        - ansible_facts[item].ipv4 is defined
-        - ansible_facts[item].ipv4.address == ansible_default_ipv4.address
 
 # ==================== IPTABLES ====================
 
@@ -163,15 +340,37 @@
   hosts: psqlserver
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
-    - name: Create iptables rules
+#    - name: DNF| reate firewalld rules
+#      ansible.builtin.shell: |
+#           # Зона по умолчанию - drop (аналог DROP политики)
+#           systemctl enable firewalld
+#           systemctl restart firewalld
+#           firewall-cmd --set-default-zone=drop
+#           firewall-cmd --zone=trusted --add-interface=lo --permanent
+#           firewall-cmd --permanent --add-service=ssh
+#           firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='{{ CLUSTER_NET }}' port port='5432' protocol='tcp' accept"
+#           firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='{{ VIP }}' port port='5432' protocol='tcp' accept"
+#           firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='{{ CLUSTER_NET }}' port port='8008' protocol='tcp' accept"
+#           firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='{{ CLUSTER_NET }}' port port='2379' protocol='tcp' accept"
+#           firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='{{ CLUSTER_NET }}' port port='2380' protocol='tcp' accept"
+#           firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='{{ CLUSTER_NET }}' protocol='vrrp' accept"
+#           firewall-cmd --permanent --add-rich-rule="rule family='ipv4' protocol value='icmp' accept"
+#           firewall-cmd --reload             
+#      args:
+#        executable: /bin/bash
+#      when: 
+#      - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+#      - ansible_facts['distribution_major_version'] in ["7", "8"] 
+
+    - name: APT | Create iptables rules
       ansible.builtin.shell: |
         # Очищаем все правила
-        iptables -F
-        iptables -X
-        iptables -t nat -F
-        iptables -t mangle -F
+        #iptables -F
+        #iptables -X
+        #iptables -t nat -F
+        #iptables -t mangle -F
         
         # Политики по умолчанию
         iptables -P INPUT DROP
@@ -231,7 +430,8 @@
         systemctl enable iptables-restore.service
       args:
         executable: /bin/bash
-
+      when: ansible_facts['distribution'] == "Astra Linux"
+      
 
 # ==================== KEEPALIVED SCRIPTS ====================
 
@@ -239,12 +439,11 @@
   hosts: psqlserver
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Remove immutable flag from scripts if they exist
       ansible.builtin.shell: |
         chattr -i /etc/keepalived/leader_check.sh 2>/dev/null || true
-        chattr -i /etc/keepalived/sync_standby_check.sh 2>/dev/null || true
       args:
         executable: /bin/bash
 
@@ -264,36 +463,27 @@
       args:
         executable: /bin/bash
 
-    - name: Create sync standby check script
-      ansible.builtin.shell: |
-        cat > /etc/keepalived/sync_standby_check.sh << 'SCRIPT'
-        #!/bin/bash
-        PATRONI_API_URL="http://127.0.0.1:8008"
-        code=$(curl -s -o /dev/null -w "%{http_code}" "$PATRONI_API_URL/sync")
-        if [ "$code" == "200" ]; then
-            exit 0
-        else
-            exit 1
-        fi
-        SCRIPT
-        chmod 700 /etc/keepalived/sync_standby_check.sh
-      args:
-        executable: /bin/bash
 
     - name: Make scripts immutable
       ansible.builtin.shell: |
         chattr +i /etc/keepalived/leader_check.sh 2>/dev/null || true
-        chattr +i /etc/keepalived/sync_standby_check.sh 2>/dev/null || true
       args:
         executable: /bin/bash
 
-# ==================== KEEPALIVED CONFIGURATION ====================
+#    - name: Find network interface
+#      ansible.builtin.set_fact:
+#        iface: "{{ item }}"
+#      loop: "{{ ansible_facts.interfaces }}"
+#      when: 
+#        - ansible_facts[item].ipv4 is defined
+#        - ansible_facts[item].ipv4.address == ansible_default_ipv4.address
 
-- name: 4. Configure keepalived on all PostgreSQL nodes
-  hosts: psqlserver
+# ==================== KEEPALIVED CONFIGURATION ====================
+- name: 4.1 Configure keepalived on MASTER PostgreSQL nodes
+  hosts: psql1server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Create keepalived configuration with Patroni checks
       ansible.builtin.shell: |
@@ -311,12 +501,54 @@
         }
         
         vrrp_instance PG_MASTER_VIP {
-            interface {{ iface }}
+            interface {{ ETH_VIP }}
             virtual_router_id 51
             priority 255
             advert_int 1
+            state MASTER
+            authentication {
+                auth_type PASS
+                auth_pass P@sswd
+            }
+            virtual_ipaddress {
+                {{ VIP }}/24
+            }
+            track_script {
+                leader_check
+            }
+        }
+        EOF
+      args:
+        executable: /bin/bash
+
+
+- name: 4.2 Configure keepalived on BACKUP PostgreSQL nodes
+  hosts: psql2server,psql3server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: Create keepalived configuration with Patroni checks
+      ansible.builtin.shell: |
+        cat > /etc/keepalived/keepalived.conf << EOF
+        global_defs {
+            script_user root
+            enable_script_security
+        }
+        
+        vrrp_script leader_check {
+            script "/etc/keepalived/leader_check.sh"
+            interval 1
+            fall 1
+            rise 1
+        }
+        
+        vrrp_instance PG_MASTER_VIP {
+            interface {{ ETH_VIP }}
+            virtual_router_id 51
+            priority 254
+            advert_int 1
             state BACKUP
-            nopreempt
             authentication {
                 auth_type PASS
                 auth_pass P@sswd
@@ -336,7 +568,7 @@
   hosts: psqlserver
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Start keepalived
       ansible.builtin.shell: |
@@ -353,15 +585,17 @@
   hosts: etcdserver
   become: true
   tasks:
-    - name: Stop etcd
-      ansible.builtin.shell: systemctl stop etcd 2>/dev/null || true
-      args:
-        executable: /bin/bash
+#    - name: Stop etcd
+#      ansible.builtin.shell: systemctl stop etcd 2>/dev/null || true
+#      args:
+#        executable: /bin/bash
 
-    - name: Remove old etcd data
-      ansible.builtin.shell: /bin/rm -rf /var/lib/etcd/default
+    - name: APT | Remove old etcd data
+      ansible.builtin.shell: /bin/rm -rf /var/lib/etcd/*
       args:
         executable: /bin/bash
+#      when: ansible_facts['distribution'] == "Astra Linux"
+
 
     - name: Create fresh etcd directory
       ansible.builtin.file:
@@ -370,12 +604,43 @@
         owner: etcd
         group: etcd
         mode: '0750'
+#      when: ansible_facts['distribution'] == "Astra Linux"
 
-- name: 7. Configure etcd on all nodes
-  hosts: etcdserver
+
+    - name: DNF | Создать etcd службу systemd
+      ansible.builtin.copy:
+       dest: /usr/lib/systemd/system/etcd.service
+       mode: '0644'
+       content: |
+         [Unit]
+         Description=etcd key-value store
+         Documentation=https://github.com/etcd-io/etcd
+         After=network.target
+         After=network-online.target
+         Wants=network-online.target
+         
+         [Service]
+         Type=notify
+         WorkingDirectory=/var/lib/etcd
+         EnvironmentFile=-/etc/default/etcd
+         User=etcd
+         ExecStart=/usr/bin/etcd
+         Restart=always
+         RestartSec=10s
+         LimitNOFILE=65536
+          
+         [Install]
+         WantedBy=multi-user.target
+
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+- name: 7. APT | Configure etcd on 1 nodes
+  hosts: etcd1server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Create etcd configuration
       ansible.builtin.shell: |
@@ -387,22 +652,174 @@
         ETCD_NAME="{{ inventory_hostname }}"
         ETCD_HEARTBEAT_INTERVAL="1000"
         ETCD_ELECTION_TIMEOUT="5000"
-        ETCD_ENABLE_V2="true"
+        ETCD_ENABLE_V2="false"
+        ETCD_STRICT_RECONFIG_CHECK="true"
         #[Clustering]
-        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ ansible_host }}:2380"
-        ETCD_ADVERTISE_CLIENT_URLS="http://{{ ansible_host }}:2379"
+        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380"
+        ETCD_ADVERTISE_CLIENT_URLS="http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2379"
         ETCD_INITIAL_CLUSTER_TOKEN="etcdcluster"
-        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2380"
+        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
         ETCD_INITIAL_CLUSTER_STATE="new"
         EOF
       args:
         executable: /bin/bash
+      when: ansible_facts['distribution'] == "Astra Linux" 
+
+- name: 7. APT | Configure etcd on 2 nodes
+  hosts: etcd2server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: Create etcd configuration
+      ansible.builtin.shell: |
+        cat > /etc/default/etcd << 'EOF'
+        #[Member]
+        ETCD_DATA_DIR="/var/lib/etcd/default"
+        ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
+        ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+        ETCD_NAME="{{ inventory_hostname }}"
+        ETCD_HEARTBEAT_INTERVAL="1000"
+        ETCD_ELECTION_TIMEOUT="5000"
+        ETCD_ENABLE_V2="false"
+        ETCD_STRICT_RECONFIG_CHECK="true"
+        #[Clustering]
+        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380"
+        ETCD_ADVERTISE_CLIENT_URLS="http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2379"
+        ETCD_INITIAL_CLUSTER_TOKEN="etcdcluster"
+        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
+        ETCD_INITIAL_CLUSTER_STATE="new"
+        EOF
+      args:
+        executable: /bin/bash
+      when: ansible_facts['distribution'] == "Astra Linux" 
+
+- name: 7. APT | Configure etcd on 3 nodes
+  hosts: etcd3server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: Create etcd configuration
+      ansible.builtin.shell: |
+        cat > /etc/default/etcd << 'EOF'
+        #[Member]
+        ETCD_DATA_DIR="/var/lib/etcd/default"
+        ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
+        ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+        ETCD_NAME="{{ inventory_hostname }}"
+        ETCD_HEARTBEAT_INTERVAL="1000"
+        ETCD_ELECTION_TIMEOUT="5000"
+        ETCD_ENABLE_V2="false"
+        ETCD_STRICT_RECONFIG_CHECK="true"
+        #[Clustering]
+        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
+        ETCD_ADVERTISE_CLIENT_URLS="http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2379"
+        ETCD_INITIAL_CLUSTER_TOKEN="etcdcluster"
+        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
+        ETCD_INITIAL_CLUSTER_STATE="new"
+        EOF
+      args:
+        executable: /bin/bash
+      when: ansible_facts['distribution'] == "Astra Linux" 
+  
+- name: 7. DNF | Configure etcd on 1 nodes
+  hosts: etcd1server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: Create etcd configuration
+      ansible.builtin.shell: |
+        cat > /etc/default/etcd << 'EOF'
+        #[Member]
+        ETCD_DATA_DIR="/var/lib/etcd"
+        ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
+        ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+        ETCD_NAME="{{ inventory_hostname }}"
+        ETCD_HEARTBEAT_INTERVAL="1000"
+        ETCD_ELECTION_TIMEOUT="5000"
+        ETCD_ENABLE_V2="false"
+        ETCD_STRICT_RECONFIG_CHECK="true"
+        #[Clustering]
+        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380"
+        ETCD_ADVERTISE_CLIENT_URLS="http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2379"
+        ETCD_INITIAL_CLUSTER_TOKEN="etcdcluster"
+        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
+        ETCD_INITIAL_CLUSTER_STATE="new"
+        EOF
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+- name: 7. DNF | Configure etcd on 2 nodes
+  hosts: etcd2server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: Create etcd configuration
+      ansible.builtin.shell: |
+        cat > /etc/default/etcd << 'EOF'
+        #[Member]
+        ETCD_DATA_DIR="/var/lib/etcd"
+        ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
+        ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+        ETCD_NAME="{{ inventory_hostname }}"
+        ETCD_HEARTBEAT_INTERVAL="1000"
+        ETCD_ELECTION_TIMEOUT="5000"
+        ETCD_ENABLE_V2="false"
+        ETCD_STRICT_RECONFIG_CHECK="true"
+        #[Clustering]
+        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380"
+        ETCD_ADVERTISE_CLIENT_URLS="http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2379"
+        ETCD_INITIAL_CLUSTER_TOKEN="etcdcluster"
+        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
+        ETCD_INITIAL_CLUSTER_STATE="new"
+        EOF
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"               - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+- name: 7. DNF | Configure etcd on 3 nodes
+  hosts: etcd3server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: Create etcd configuration
+      ansible.builtin.shell: |
+        cat > /etc/default/etcd << 'EOF'
+        #[Member]
+        ETCD_DATA_DIR="/var/lib/etcd"
+        ETCD_LISTEN_PEER_URLS="http://0.0.0.0:2380"
+        ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+        ETCD_NAME="{{ inventory_hostname }}"
+        ETCD_HEARTBEAT_INTERVAL="1000"
+        ETCD_ELECTION_TIMEOUT="5000"
+        ETCD_ENABLE_V2="false"
+        ETCD_STRICT_RECONFIG_CHECK="true"
+        #[Clustering]
+        ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
+        ETCD_ADVERTISE_CLIENT_URLS="http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2379"
+        ETCD_INITIAL_CLUSTER_TOKEN="etcdcluster"
+        ETCD_INITIAL_CLUSTER="etcd1server=http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2380,etcd2server=http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2380,etcd3server=http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2380"
+        ETCD_INITIAL_CLUSTER_STATE="new"
+        EOF
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
 
 - name: 8. Start etcd on all nodes simultaneously
   hosts: etcdserver
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Start etcd in background
       ansible.builtin.shell: |
@@ -410,27 +827,27 @@
         systemctl restart etcd.service &
       args:
         executable: /bin/bash
-      async: 15
+      async: 10
       poll: 0
 
     - name: Wait for etcd to form cluster
       ansible.builtin.pause:
-        seconds: 15
+        seconds: 3
 
 - name: 9. Verify etcd cluster status
   hosts: etcd1server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Check etcd endpoint status
       ansible.builtin.shell: |
-        etcdctl --endpoints=http://{{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379,http://{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2379 endpoint status --cluster
+        etcdctl --endpoints=http://{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}:2379,http://{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}:2379,http://{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}:2379 endpoint status --cluster
       args:
         executable: /bin/bash
       register: etcd_status
       until: etcd_status.rc == 0
-      retries: 20
+      retries: 3
       delay: 5
 
     - name: Show etcd cluster status
@@ -442,7 +859,7 @@
   become: true
   serial: 1
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Change cluster state
       ansible.builtin.replace:
@@ -451,7 +868,9 @@
         replace: 'ETCD_INITIAL_CLUSTER_STATE="existing"'
 
     - name: Restart etcd
-      ansible.builtin.shell: systemctl restart etcd.service &
+      ansible.builtin.shell: |
+        systemctl enable etcd.service
+        systemctl restart etcd.service &
       args:
         executable: /bin/bash
       async: 10
@@ -459,7 +878,7 @@
 
     - name: Pause between restarts
       ansible.builtin.pause:
-        seconds: 5
+        seconds: 3
 
 # ==================== PATRONI ====================
 
@@ -467,137 +886,259 @@
   hosts: psqlserver
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
-    - name: Create Patroni config
+    - name: Config. Bash. Copy config.yml to patroni conf dir
       ansible.builtin.copy:
+        src: ./patroni-config.yml
         dest: /etc/patroni/config.yml
-        content: |
-          scope: psqlcluster
-          name: {{ hostname | default(inventory_hostname) }}
-          namespace: /service/
-          
-          log:
-            level: INFO
-            dir: /var/log/patroni
-          
-          restapi:
-            listen: 0.0.0.0:8008
-            connect_address: {{ ansible_host }}:8008
-          
-          etcd:
-            hosts: {{ hostvars[groups['etcdserver'][0]]['ansible_host'] }}:2379,{{ hostvars[groups['etcdserver'][1]]['ansible_host'] }}:2379,{{ hostvars[groups['etcdserver'][2]]['ansible_host'] }}:2379
-          
-          bootstrap:
-            dcs:
-              ttl: 30
-              loop_wait: 10
-              retry_timeout: 10
-              maximum_lag_on_failover: 1048576
-              postgresql:
-                use_pg_rewind: true
-                use_slots: true
-                parameters:
-                  max_connections: 500
-                  wal_level: replica
-                  hot_standby: "on"
-                  wal_keep_segments: 100
-                  max_wal_senders: 10
-                  max_replication_slots: 10
-                  wal_log_hints: "on"
-                  shared_buffers: 1GB
-                  listen_addresses: "0.0.0.0"
-                  port: 5432
-            
-            initdb:
-              - encoding: UTF8
-              - locale: ru_RU.UTF-8
-              - data-checksums
-            
-            users:
-              postgres:
-                password: {{ pass_postgres }}
-                options:
-                  - superuser
-                  - createdb
-                  - createrole
-                  - login
-                  - replication
-              super_role:
-                password: {{ pass_postgres }}
-                options:
-                  - superuser
-                  - createdb
-                  - createrole
-                  - login
-                  - replication
-              replica_role:
-                password: {{ pass_repl }}
-                options:
-                  - replication
-                  - login
-              rewind_role:
-                password: rewind
-                options:
-                  - superuser
-                  - login
-            
-            pg_hba:
-              - local   all             all                                   md5
-              - local   replication     all                                   md5
-              - host    all             all             127.0.0.1/32          md5
-              - host    all             all             ::1/128               md5
-              - host    replication     replica_role    {{ hostvars[groups['psqlserver'][0]]['ansible_host'] }}/32    md5
-              - host    replication     replica_role    {{ hostvars[groups['psqlserver'][1]]['ansible_host'] }}/32    md5
-              - host    replication     replica_role    {{ hostvars[groups['psqlserver'][2]]['ansible_host'] }}/32    md5
-              - host    all             all             {{ hostvars[groups['psqlserver'][0]]['ansible_host'] }}/32    md5
-              - host    all             all             {{ hostvars[groups['psqlserver'][1]]['ansible_host'] }}/32    md5
-              - host    all             all             {{ hostvars[groups['psqlserver'][2]]['ansible_host'] }}/32    md5
-              - host    all             all             {{ VIP }}/32          md5
-              - host    all             all             {{ CLUSTER_NET }}     md5
-          
-          postgresql:
-            listen: 0.0.0.0:5432
-            connect_address: {{ ansible_host }}:5432
-            data_dir: /var/lib/postgresql/11/main
-            bin_dir: /usr/lib/postgresql/11/bin
-            pgpass: /var/lib/postgresql/.pgpass_patroni
-            authentication:
-              superuser:
-                username: super_role
-                password: {{ pass_postgres }}
-              replication:
-                username: replica_role
-                password: {{ pass_repl }}
-              rewind:
-                username: rewind_role
-                password: rewind
-            parameters:
-              unix_socket_directories: '/var/run/postgresql'
-          
-          tags:
-            nofailover: false
-            noloadbalance: false
-            clonefrom: false
-        owner: postgres
-        group: postgres
-        mode: '0640'
+
+    - name: Config.  patroni
+      ansible.builtin.file:
+        path: /etc/patroni/config.yml
+        owner: 'postgres'
+        group: 'postgres'
+        mode: '0700'
+  
+    - name: Config.  patroni log
+      ansible.builtin.shell:  chown postgres:postgres -R /var/log/patroni/
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+    - name: "Изменить ExecStart в файле сервиса Patroni"
+      replace:
+        path: /usr/lib/systemd/system/patroni.service
+        regexp: '^ExecStart=/bin/patroni /etc/patroni.yml'
+        replace: 'ExecStart=/bin/patroni /etc/patroni/config.yml'
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+
+    - name: reload_systemd
+      systemd:
+        daemon_reload: yes
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+
+#    - name: "Удалить строку lc_messages из файла для Astra Linux"
+#      ansible.builtin.lineinfile:
+#         path: "/etc/patroni/config.yml"
+#         regexp: 'lc_messages'
+#         state: absent
+#      when: ansible_facts['distribution'] == "Astra Linux" 
+  
+
+- name: Patroni | Server "psql1server". Edit patroni.yml in patroni conf dir.
+  hosts: psql1server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: "Получить системную локаль"
+      shell: locale -a | grep -E '\.utf8' | head -1
+      register: system_locale
+      changed_when: false
+      when: ansible_facts['distribution'] == "Astra Linux" 
+ 
+
+    - name: "DNF | Получить системную локаль"
+      shell: localectl |grep "System Locale"|awk -F "=" '{print $2}'
+      register: system_locale
+      changed_when: false
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+
+    - name: Config patroni. WAL enable
+      ansible.builtin.shell: |
+        sed -i "s/#param1//g" config.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/patroni
+      when: WAL is defined and WAL | length > 0
+
+    - name: Config. Bash. Copy config.yml to patroni conf dir. Start service
+      ansible.builtin.shell: |
+        sed -i "s/param0/{{ ansible_hostname }}/g" config.yml
+        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
+        sed -i "s|pg_data_dir|{{ DATA }}|g" config.yml        
+        sed -i "s/paramet2/{{ P_VER }}/g" config.yml
+        sed -i "s|param2|{{ CLUSTER_NET }}|g" config.yml
+        sed -i "s/param3/{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param4/{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param5/{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param7/{{ pass_postgres }}/g" config.yml
+        sed -i "s/param8/{{ pass_repl }}/g" config.yml
+        sed -i "s/param6/{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param_locale/{{ system_locale.stdout }}/g" config.yml
+        
+      args:
+        executable: /bin/bash
+        chdir: /etc/patroni
+    
+
+    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
+      ansible.builtin.shell: |
+        systemctl disable --now postgrespro-std-{{ P_VER }}.service
+        #systemctl restart patroni.service
+        # rm -rf /var/lib/postgresql/15/main/*
+      args:
+        executable: /bin/bash
+
+#    - name: Get Patroni replication status.
+#      command: patronictl -c /etc/patroni/config.yml list
+#      register: status
+#    - debug: var=status.stdout_lines
+
+- name: Patroni | Server "psql2server". Edit patroni.yml in patroni conf dir.
+  hosts: psql2server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: "Получить системную локаль"
+      shell: locale -a | grep -E '\.utf8' | head -1
+      register: system_locale
+      changed_when: false
+      when: ansible_facts['distribution'] == "Astra Linux" 
+ 
+
+    - name: "DNF | Получить системную локаль"
+      shell: localectl |grep "System Locale"|awk -F "=" '{print $2}'
+      register: system_locale
+      changed_when: false
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+    - name: Config patroni. WAL enable
+      ansible.builtin.shell: |
+        sed -i "s/#param1//g" config.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/patroni
+      when: WAL is defined and WAL | length > 0
+
+    - name: Config. Bash. Copy config.yml to patroni conf dir. Start service
+      ansible.builtin.shell: |
+        sed -i "s/param0/{{ ansible_hostname }}/g" config.yml
+        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
+        sed -i "s|pg_data_dir|{{ DATA }}|g" config.yml        
+        sed -i "s/paramet2/{{ P_VER }}/g" config.yml
+        sed -i "s|param2|{{ CLUSTER_NET }}|g" config.yml
+        sed -i "s/param3/{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param4/{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param5/{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param7/{{ pass_postgres }}/g" config.yml
+        sed -i "s/param8/{{ pass_repl }}/g" config.yml
+        sed -i "s/param6/{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param_locale/{{ system_locale.stdout }}/g" config.yml
+        
+
+      args:
+        executable: /bin/bash
+        chdir: /etc/patroni
+    
+
+    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
+      ansible.builtin.shell: |
+        systemctl disable --now  postgrespro-std-{{ P_VER }}.service
+        #systemctl restart patroni.service
+        # rm -rf /var/lib/postgresql/15/main/*
+      args:
+        executable: /bin/bash
+
+#    - name: Get Patroni replication status.
+#      command: patronictl -c /etc/patroni/config.yml list
+#      register: status
+#    - debug: var=status.stdout_lines
+
+
+
+- name: Patroni | Server "psql3server". Edit patroni.yml in patroni conf dir.
+  hosts: psql3server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: "Получить системную локаль"
+      shell: locale -a | grep -E '\.utf8' | head -1
+      register: system_locale
+      changed_when: false
+      when: ansible_facts['distribution'] == "Astra Linux" 
+ 
+
+    - name: "DNF | Получить системную локаль"
+      shell: localectl |grep "System Locale"|awk -F "=" '{print $2}'
+      register: system_locale
+      changed_when: false
+      when:
+        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
+        - ansible_facts['distribution_major_version'] in ["7", "8"]
+
+    - name: Config patroni. WAL enable
+      ansible.builtin.shell: |
+        sed -i "s/#param1//g" config.yml
+      args:
+        executable: /bin/bash
+        chdir: /etc/patroni
+      when: WAL is defined and WAL | length > 0
+
+    - name: Config. Bash. Copy config.yml to patroni conf dir. Start service
+      ansible.builtin.shell: |
+        sed -i "s/param0/{{ ansible_hostname }}/g" config.yml
+        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
+        sed -i "s|pg_data_dir|{{ DATA }}|g" config.yml        
+        sed -i "s/paramet2/{{ P_VER }}/g" config.yml
+        sed -i "s|param2|{{ CLUSTER_NET }}|g" config.yml
+        sed -i "s/param3/{{ hostvars[groups['etcdserver'][0]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param4/{{ hostvars[groups['etcdserver'][1]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param5/{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param7/{{ pass_postgres }}/g" config.yml
+        sed -i "s/param8/{{ pass_repl }}/g" config.yml
+        sed -i "s/param6/{{ hostvars[groups['etcdserver'][2]]['etcd_net'] }}/g" config.yml
+        sed -i "s/param_locale/{{ system_locale.stdout }}/g" config.yml
+        
+
+      args:
+        executable: /bin/bash
+        chdir: /etc/patroni
+    
+
+    - name: Config. Bash. Stop Postgresql sevice. Restart patroni service.
+      ansible.builtin.shell: |
+        systemctl disable --now  postgrespro-std-{{ P_VER }}.service
+        #systemctl restart patroni.service
+        # rm -rf /var/lib/postgresql/15/main/*
+      args:
+        executable: /bin/bash
+
+#    - name: Get Patroni replication status.
+#      command: patronictl -c /etc/patroni/config.yml list
+#      register: status
+#    - debug: var=status.stdout_lines
+
 
 - name: 12. Initialize first Patroni node (will become master)
   hosts: psql1server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Clean PostgreSQL data directory
-      ansible.builtin.shell: rm -rf /var/lib/postgresql/11/main/*
+      ansible.builtin.shell: |
+        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
+        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
       args:
         executable: /bin/bash
 
     - name: Start Patroni on first node
-      ansible.builtin.shell: |
-        systemctl daemon-reload
-        systemctl restart patroni.service &
+      ansible.builtin.shell: systemctl restart patroni.service &
       args:
         executable: /bin/bash
       async: 10
@@ -614,43 +1155,45 @@
       ansible.builtin.pause:
         seconds: 20
 
-- name: 13. Ensure postgres role exists in database
-  hosts: psql1server
-  become: true
-  become_user: postgres
-  vars_files:
-    - '../../settings.yml'
-  tasks:
-    - name: Create postgres role if not exists
-      ansible.builtin.shell: |
-        psql -U super_role -d postgres << 'SQL'
-        DO $$
-        BEGIN
-          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'postgres') THEN
-            CREATE ROLE postgres WITH SUPERUSER CREATEDB CREATEROLE LOGIN REPLICATION PASSWORD '{{ pass_postgres }}';
-            COMMENT ON ROLE postgres IS 'Default PostgreSQL superuser';
-          END IF;
-        END
-        $$;
-        SQL
-      args:
-        executable: /bin/bash
+#- name: 13. Ensure postgres role exists in database
+#  hosts: psql1server
+#  become: true
+#  become_user: postgres
+#  vars_files:
+#    - './settings.yml'
+#  tasks:
+#    - name: Create postgres role if not exists
+#      ansible.builtin.shell: |
+#        psql -U super_role -d postgres << 'SQL'
+#        DO $$
+#        BEGIN
+#          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'postgres') THEN
+#            CREATE ROLE postgres WITH SUPERUSER CREATEDB CREATEROLE LOGIN REPLICATION PASSWORD '{{ pass_postgres }}';
+#            COMMENT ON ROLE postgres IS 'Default PostgreSQL superuser';
+#          END IF;
+#        END
+#        $$;
+#        SQL
+#      args:
+#        executable: /bin/bash
+#      when: ansible_facts['distribution'] == "Astra Linux" 
+ 
 
-- name: 14. Start Patroni on replica nodes
-  hosts: psql2server,psql3server
+- name: 14.1. Start Patroni on replica nodes
+  hosts: psql2server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Clean PostgreSQL data directory
-      ansible.builtin.shell: rm -rf /var/lib/postgresql/11/main/*
+      ansible.builtin.shell: |
+        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
+        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
       args:
         executable: /bin/bash
 
     - name: Start Patroni on replica
-      ansible.builtin.shell: |
-        systemctl daemon-reload
-        systemctl restart patroni.service &
+      ansible.builtin.shell: systemctl restart patroni.service &
       args:
         executable: /bin/bash
       async: 10
@@ -658,7 +1201,32 @@
 
     - name: Wait for Patroni to start replicating
       ansible.builtin.pause:
-        seconds: 30
+        seconds: 20
+
+
+- name: 14.2. Start Patroni on replica nodes
+  hosts: psql3server
+  become: true
+  vars_files:
+    - './settings.yml'
+  tasks:
+    - name: Clean PostgreSQL data directory
+      ansible.builtin.shell: |
+        rm -rf {{ DATA }}/pgpro-cert-{{ P_VER }}/*
+        chown -R postgres:postgres {{ DATA }}/pgpro-cert-{{ P_VER }}
+      args:
+        executable: /bin/bash
+
+    - name: Start Patroni on replica
+      ansible.builtin.shell: systemctl restart patroni.service &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+
+    - name: Wait for Patroni to start replicating
+      ansible.builtin.pause:
+        seconds: 20
 
 # ==================== VERIFICATION ====================
 
@@ -666,7 +1234,7 @@
   hosts: psql1server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Check Patroni cluster
       ansible.builtin.shell: patronictl -c /etc/patroni/config.yml list
@@ -685,7 +1253,7 @@
   hosts: psqlserver
   become: true
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Run leader check
       ansible.builtin.shell: |
@@ -710,7 +1278,7 @@
   hosts: localhost
   connection: local
   vars_files:
-    - '../../settings.yml'
+    - './settings.yml'
   tasks:
     - name: Show deployment summary
       ansible.builtin.debug:
@@ -721,7 +1289,7 @@
           - ""
           - "System users created:"
           - "  postgres (password set)"
-          - "  super_role (locked)"
+#          - "  super_role (locked)"
           - "  replica_role (locked)"
           - "  rewind_role (locked)"
           - ""
@@ -741,14 +1309,14 @@
           - "  VIP {{ VIP }} active on current master node"
           - ""
           - "Database users:"
-          - "  postgres (superuser): {{ pass_postgres }}"
+#          - "  postgres (superuser): {{ pass_postgres }}"
           - "  super_role (superuser): {{ pass_postgres }}"
           - "  replica_role (replication): {{ pass_repl }}"
           - "  rewind_role: rewind"
           - ""
           - "Connect via VIP:"
           - "  psql -h {{ VIP }} -U postgres -d postgres"
-          - "  psql -h {{ VIP }} -U super_role -d postgres"
+#          - "  psql -h {{ VIP }} -U super_role -d postgres"
           - ""
           - "Check cluster:"
           - "  patronictl -c /etc/patroni/config.yml list"
