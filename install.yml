@@ -379,7 +379,7 @@
          recurse: "{{ item.recurse | default(false) }}"
       loop:
         - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}", mode: "0750" }
-        - { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}/main/conf.d", mode: "0750" }
+        #- { path: "{{ DATA }}/pgpro-cert-{{ P_VER }}/main/conf.d", mode: "0750" } #redos8 надо удалить, redod7.3 тоже без нее установился, smolensk 1.7 тоже без нее работает
         - { path: "{{ DATA }}", mode: "0700", recurse: true }
       when: 
        - DATA is defined
@@ -455,73 +455,73 @@
 #      - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
 #      - ansible_facts['distribution_major_version'] in ["7", "8"] 
 
-    - name: APT | Create iptables rules
-      ansible.builtin.shell: |
-        # Очищаем все правила
-        #iptables -F
-        #iptables -X
-        #iptables -t nat -F
-        #iptables -t mangle -F
-        
-        # Политики по умолчанию
-        iptables -P INPUT DROP
-        iptables -P OUTPUT ACCEPT
-        iptables -P FORWARD DROP
-        
-        # Разрешаем loopback
-        iptables -A INPUT -i lo -j ACCEPT
-        
-        # Разрешаем установленные и связанные соединения
-        iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-        
-        # SSH - разрешаем отовсюду (для внешнего доступа)
-        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-        
-        # PostgreSQL - из сети кластера и VIP
-        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 5432 -j ACCEPT
-        iptables -A INPUT -s {{ VIP }} -p tcp --dport 5432 -j ACCEPT
-        
-        # Patroni REST API - из сети кластера
-        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 8008 -j ACCEPT
-        
-        # etcd client - из сети кластера
-        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 2379 -j ACCEPT
-        
-        # etcd peer - из сети кластера
-        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 2380 -j ACCEPT
-        
-        # VRRP (keepalived) - из сети кластера
-        iptables -A INPUT -s {{ CLUSTER_NET }} -p vrrp -j ACCEPT
-        iptables -A INPUT -d 224.0.0.18 -p vrrp -j ACCEPT
-        
-        # ICMP (ping) - отовсюду для диагностики
-        iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
-        
-        # Сохраняем правила
-        iptables-save > /etc/iptables/rules.v4
-        
-        # Создаем systemd-сервис для восстановления правил при загрузке
-        cat > /etc/systemd/system/iptables-restore.service << 'SERVICE'
-        [Unit]
-        Description=Restore iptables rules
-        Before=network-pre.target
-        Wants=network-pre.target
-        
-        [Service]
-        Type=oneshot
-        ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
-        RemainAfterExit=yes
-        
-        [Install]
-        WantedBy=multi-user.target
-        SERVICE
-        
-        # Активируем сервис для автозагрузки
-        systemctl daemon-reload
-        systemctl enable iptables-restore.service
-      args:
-        executable: /bin/bash
-      when: ansible_facts['distribution'] == "Astra Linux"
+#    - name: APT | Create iptables rules
+#      ansible.builtin.shell: |
+#        # Очищаем все правила
+#        #iptables -F
+#        #iptables -X
+#        #iptables -t nat -F
+#        #iptables -t mangle -F
+#        
+#        # Политики по умолчанию
+#        iptables -P INPUT DROP
+#        iptables -P OUTPUT ACCEPT
+#        iptables -P FORWARD DROP
+#        
+#        # Разрешаем loopback
+#        iptables -A INPUT -i lo -j ACCEPT
+#        
+#        # Разрешаем установленные и связанные соединения
+#        iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+#        
+#        # SSH - разрешаем отовсюду (для внешнего доступа)
+#        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+#        
+#        # PostgreSQL - из сети кластера и VIP
+#        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 5432 -j ACCEPT
+#        iptables -A INPUT -s {{ VIP }} -p tcp --dport 5432 -j ACCEPT
+#        
+#        # Patroni REST API - из сети кластера
+#        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 8008 -j ACCEPT
+#        
+#        # etcd client - из сети кластера
+#        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 2379 -j ACCEPT
+#        
+#        # etcd peer - из сети кластера
+#        iptables -A INPUT -s {{ CLUSTER_NET }} -p tcp --dport 2380 -j ACCEPT
+#        
+#        # VRRP (keepalived) - из сети кластера
+#        iptables -A INPUT -s {{ CLUSTER_NET }} -p vrrp -j ACCEPT
+#        iptables -A INPUT -d 224.0.0.18 -p vrrp -j ACCEPT
+#        
+#        # ICMP (ping) - отовсюду для диагностики
+#        iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+#        
+#        # Сохраняем правила
+#        iptables-save > /etc/iptables/rules.v4
+#        
+#        # Создаем systemd-сервис для восстановления правил при загрузке
+#        cat > /etc/systemd/system/iptables-restore.service << 'SERVICE'
+#        [Unit]
+#        Description=Restore iptables rules
+#        Before=network-pre.target
+#        Wants=network-pre.target
+#        
+#        [Service]
+#        Type=oneshot
+#        ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+#        RemainAfterExit=yes
+#        
+#        [Install]
+#        WantedBy=multi-user.target
+#        SERVICE
+#        
+#        # Активируем сервис для автозагрузки
+#        systemctl daemon-reload
+#        systemctl enable iptables-restore.service
+#      args:
+#        executable: /bin/bash
+#      when: ansible_facts['distribution'] == "Astra Linux"
       
 
 # ==================== KEEPALIVED SCRIPTS ====================
@@ -1000,14 +1000,13 @@
         - ansible_facts['distribution_major_version'] in ["7", "8"]
 
     - name: "Изменить ExecStart в файле сервиса Patroni"
-      replace:
+      lineinfile:
         path: /usr/lib/systemd/system/patroni.service
-        regexp: '^ExecStart=/bin/patroni /etc/patroni.yml'
-        replace: 'ExecStart=/bin/patroni /etc/patroni/config.yml'
+        regexp: '^ExecStart=.*'
+        line: 'ExecStart=/usr/bin/patroni /etc/patroni/config.yml'
       when:
         - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
         - ansible_facts['distribution_major_version'] in ["7", "8"]
-
 
     - name: reload_systemd
       systemd:
@@ -1039,6 +1038,7 @@
     - name: Config patroni. WAL enable
       ansible.builtin.shell: |
         sed -i "s/#param1//g" config.yml
+        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml 
       args:
         executable: /bin/bash
         chdir: /etc/patroni
@@ -1047,7 +1047,7 @@
     - name: Config. Bash. Copy config.yml to patroni conf dir. Start service
       ansible.builtin.shell: |
         sed -i "s/param0/{{ ansible_hostname }}/g" config.yml
-        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
+        #sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
         sed -i "s|pg_data_dir|{{ DATA }}|g" config.yml        
         sed -i "s/paramet2/{{ P_VER }}/g" config.yml
         sed -i "s|param2|{{ CLUSTER_NET }}|g" config.yml
@@ -1091,6 +1091,7 @@
     - name: Config patroni. WAL enable
       ansible.builtin.shell: |
         sed -i "s/#param1//g" config.yml
+        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml 
       args:
         executable: /bin/bash
         chdir: /etc/patroni
@@ -1099,7 +1100,7 @@
     - name: Config. Bash. Copy config.yml to patroni conf dir. Start service
       ansible.builtin.shell: |
         sed -i "s/param0/{{ ansible_hostname }}/g" config.yml
-        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
+        #sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
         sed -i "s|pg_data_dir|{{ DATA }}|g" config.yml        
         sed -i "s/paramet2/{{ P_VER }}/g" config.yml
         sed -i "s|param2|{{ CLUSTER_NET }}|g" config.yml
@@ -1146,6 +1147,7 @@
     - name: Config patroni. WAL enable
       ansible.builtin.shell: |
         sed -i "s/#param1//g" config.yml
+        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml 
       args:
         executable: /bin/bash
         chdir: /etc/patroni
@@ -1154,7 +1156,7 @@
     - name: Config. Bash. Copy config.yml to patroni conf dir. Start service
       ansible.builtin.shell: |
         sed -i "s/param0/{{ ansible_hostname }}/g" config.yml
-        sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
+        #sed -i "s|wal_data_dir|{{ WAL }}|g" config.yml        
         sed -i "s|pg_data_dir|{{ DATA }}|g" config.yml        
         sed -i "s/paramet2/{{ P_VER }}/g" config.yml
         sed -i "s|param2|{{ CLUSTER_NET }}|g" config.yml

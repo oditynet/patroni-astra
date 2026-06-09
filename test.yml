@@ -1,16 +1,36 @@
 ---
-# test_replication.yml
-# Простой тест репликации с числами
-
 - name: 1. Create test table on master
   hosts: psql1server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - 'settings.yml'
   tasks:
+    - name: Set PostgreSQL paths based on P_VER variable
+      set_fact:
+        pg_bin_path: "/opt/pgpro/std-{{ P_VER }}/bin"
+        pg_data_dir: "{{ DATA }}/pgpro-cert-{{ P_VER }}"
+
+    - name: Display PostgreSQL configuration
+      ansible.builtin.debug:
+        msg:
+          - "PostgreSQL version: {{ P_VER }}"
+          - "Binary path: {{ pg_bin_path }}"
+          - "Data directory: {{ pg_data_dir }}"
+
+    - name: Verify psql binary exists
+      stat:
+        path: "{{ pg_bin_path }}/psql"
+      register: psql_check
+
+    - name: Fail if psql not found
+      fail:
+        msg: "psql not found at {{ pg_bin_path }}/psql. Please check P_VER variable in settings.yml"
+      when: not psql_check.stat.exists
+
     - name: Create table and insert numbers
       ansible.builtin.shell: |
-        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres << 'SQL'
+        export PGPASSWORD="{{ pass_postgres }}"
+        {{ pg_bin_path }}/psql -U postgres -d postgres -h localhost << 'SQL'
         DROP TABLE IF EXISTS test_numbers CASCADE;
         CREATE TABLE test_numbers (id SERIAL PRIMARY KEY, number INTEGER);
         INSERT INTO test_numbers (number) VALUES (1);
@@ -27,7 +47,8 @@
 
     - name: Check data on master
       ansible.builtin.shell: |
-        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+        export PGPASSWORD="{{ pass_postgres }}"
+        {{ pg_bin_path }}/psql -U postgres -d postgres -h localhost -c "SELECT * FROM test_numbers;"
       args:
         executable: /bin/bash
       register: master_data
@@ -35,52 +56,66 @@
     - name: Display master data
       ansible.builtin.debug:
         msg:
-          - "Мастер (pgs1):"
+          - "Мастер (psql1):"
           - "{{ master_data.stdout_lines }}"
 
-- name: 2. Check data on replica pgs3 (should have 3 numbers)
+- name: 2. Check data on replica psql3 (should have 3 numbers)
   hosts: psql3server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - 'settings.yml'
   tasks:
-    - name: Check pgs3 data
+    - name: Set PostgreSQL paths based on P_VER variable
+      set_fact:
+        pg_bin_path: "/opt/pgpro/std-{{ P_VER }}/bin"
+
+    - name: Check psql3 data
       ansible.builtin.shell: |
-        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+        export PGPASSWORD="{{ pass_postgres }}"
+        {{ pg_bin_path }}/psql -U postgres -d postgres -h localhost -c "SELECT * FROM test_numbers;"
       args:
         executable: /bin/bash
-      register: pgs3_data
+      register: psql3_data
 
-    - name: Display pgs3 data
+    - name: Display psql3 data
       ansible.builtin.debug:
         msg:
-          - "Реплика pgs3:"
-          - "{{ pgs3_data.stdout_lines }}"
+          - "Реплика psql3:"
+          - "{{ psql3_data.stdout_lines }}"
 
-- name: 3. Stop replica pgs2
+- name: 3. Stop replica psql2
   hosts: psql2server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - 'settings.yml'
   tasks:
-    - name: Stop patroni on pgs2
-      ansible.builtin.shell: systemctl stop patroni.service
-      args:
-        executable: /bin/bash
+    - name: Stop patroni on psql2
+      ansible.builtin.systemd:
+        name: patroni
+        state: stopped
+
+    - name: Wait for patroni to stop
+      ansible.builtin.pause:
+        seconds: 5
 
     - name: Show stop message
       ansible.builtin.debug:
-        msg: "pgs2 остановлен"
+        msg: "psql2 остановлен"
 
-- name: 4. Insert more numbers while pgs2 is down
+- name: 4. Insert more numbers while psql2 is down
   hosts: psql1server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - 'settings.yml'
   tasks:
+    - name: Set PostgreSQL paths based on P_VER variable
+      set_fact:
+        pg_bin_path: "/opt/pgpro/std-{{ P_VER }}/bin"
+
     - name: Insert numbers 4, 5, 6
       ansible.builtin.shell: |
-        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres << 'SQL'
+        export PGPASSWORD="{{ pass_postgres }}"
+        {{ pg_bin_path }}/psql -U postgres -d postgres -h localhost << 'SQL'
         INSERT INTO test_numbers (number) VALUES (4);
         INSERT INTO test_numbers (number) VALUES (5);
         INSERT INTO test_numbers (number) VALUES (6);
@@ -88,9 +123,10 @@
       args:
         executable: /bin/bash
 
-    - name: Check master data
+    - name: Check master data after insert
       ansible.builtin.shell: |
-        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+        export PGPASSWORD="{{ pass_postgres }}"
+        {{ pg_bin_path }}/psql -U postgres -d postgres -h localhost -c "SELECT * FROM test_numbers;"
       args:
         executable: /bin/bash
       register: master_after
@@ -101,59 +137,87 @@
           - "Мастер после добавления 4,5,6:"
           - "{{ master_after.stdout_lines }}"
 
-- name: 5. Check replica pgs3 (should have all 6 numbers)
+- name: 5. Check replica psql3 (should have all 6 numbers)
   hosts: psql3server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - 'settings.yml'
   tasks:
-    - name: Check pgs3 data
+    - name: Set PostgreSQL paths based on P_VER variable
+      set_fact:
+        pg_bin_path: "/opt/pgpro/std-{{ P_VER }}/bin"
+
+    - name: Check psql3 data
       ansible.builtin.shell: |
-        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+        export PGPASSWORD="{{ pass_postgres }}"
+        {{ pg_bin_path }}/psql -U postgres -d postgres -h localhost -c "SELECT * FROM test_numbers;"
       args:
         executable: /bin/bash
-      register: pgs3_after
+      register: psql3_after
 
-    - name: Display pgs3 data
+    - name: Display psql3 data
       ansible.builtin.debug:
         msg:
-          - "Реплика pgs3 (должна иметь 6 чисел):"
-          - "{{ pgs3_after.stdout_lines }}"
+          - "Реплика psql3 (должна иметь 6 чисел):"
+          - "{{ psql3_after.stdout_lines }}"
 
-- name: 6. Start pgs2 and check it catches up
+    - name: Verify psql3 has 6 records
+      ansible.builtin.assert:
+        that:
+          - psql3_after.stdout_lines | length >= 7
+        fail_msg: "psql3 has incorrect number of records. Expected 6 rows."
+        success_msg: "psql3 replication working correctly!"
+
+- name: 6. Start psql2 and check it catches up
   hosts: psql2server
   become: true
   vars_files:
-    - '../../settings.yml'
+    - 'settings.yml'
   tasks:
-    - name: Start patroni on pgs2
-      ansible.builtin.shell: systemctl start patroni.service
-      args:
-        executable: /bin/bash
+    - name: Set PostgreSQL paths based on P_VER variable
+      set_fact:
+        pg_bin_path: "/opt/pgpro/std-{{ P_VER }}/bin"
+
+    - name: Start patroni on psql2
+      ansible.builtin.systemd:
+        name: patroni
+        state: started
 
     - name: Wait for catch up
       ansible.builtin.pause:
         seconds: 15
 
-    - name: Check pgs2 data
+    - name: Check psql2 data
       ansible.builtin.shell: |
-        /usr/lib/postgresql/11/bin/psql -U super_role -d postgres -c "SELECT * FROM test_numbers;"
+        export PGPASSWORD="{{ pass_postgres }}"
+        {{ pg_bin_path }}/psql -U postgres -d postgres -h localhost -c "SELECT * FROM test_numbers;"
       args:
         executable: /bin/bash
-      register: pgs2_data
+      register: psql2_data
 
-    - name: Display pgs2 data
+    - name: Display psql2 data
       ansible.builtin.debug:
         msg:
-          - "Реплика pgs2 после восстановления (должна иметь 6 чисел):"
-          - "{{ pgs2_data.stdout_lines }}"
+          - "Реплика psql2 после восстановления (должна иметь 6 чисел):"
+          - "{{ psql2_data.stdout_lines }}"
+
+    - name: Verify psql2 has 6 records
+      ansible.builtin.assert:
+        that:
+          - psql2_data.stdout_lines | length >= 7
+        fail_msg: "psql2 has incorrect number of records after recovery. Expected 6 rows."
+        success_msg: "psql2 replication catching up correctly!"
 
 - name: 7. Final summary
   hosts: localhost
   connection: local
   vars_files:
-    - '../../settings.yml'
+    - 'settings.yml'
   tasks:
+    - name: Build psql command
+      set_fact:
+        psql_cmd: "/opt/pgpro/std-{{ P_VER }}/bin/psql"
+
     - name: Show test results
       ansible.builtin.debug:
         msg:
@@ -162,16 +226,12 @@
           - "         ТЕСТ РЕПЛИКАЦИИ ЗАВЕРШЕН           "
           - "============================================"
           - ""
-          - "Шаги теста:"
-          - "  1. На мастере создана таблица test_numbers"
-          - "  2. Добавлены числа 1, 2, 3"
-          - "  3. Остановлена реплика pgs2"
-          - "  4. Добавлены числа 4, 5, 6"
-          - "  5. Проверена реплика pgs3 - должно быть 6 чисел"
-          - "  6. Запущена реплика pgs2"
-          - "  7. Проверена реплика pgs2 - должно быть 6 чисел"
+          - "📊 Конфигурация PostgreSQL:"
+          - "  • Версия: {{ P_VER }}"
+          - "  • Путь к бинарникам: /opt/pgpro/std-{{ P_VER }}/bin"
+          - "  • Путь к данным: {{ DATA }}/pgpro-cert-{{ P_VER }}"
           - ""
-          - "Ожидаемый результат на всех узлах:"
+          - "🎯 Ожидаемый результат на всех узлах:"
           - "  id | number"
           - "  ---+--------"
           - "   1 |      1"
@@ -181,13 +241,4 @@
           - "   5 |      5"
           - "   6 |      6"
           - ""
-          - "Проверка на мастере:"
-          - "  /usr/lib/postgresql/11/bin/psql -h {{ hostvars[groups['psqlserver'][0]]['ansible_host'] }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
-          - ""
-          - "Проверка на репликах:"
-          - "  /usr/lib/postgresql/11/bin/psql -h {{ hostvars[groups['psqlserver'][1]]['ansible_host'] }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
-          - "  /usr/lib/postgresql/11/bin/psql -h {{ hostvars[groups['psqlserver'][2]]['ansible_host'] }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
-          - ""
-          - "Проверка через VIP:"
-          - "  /usr/lib/postgresql/11/bin/psql -h {{ VIP }} -U super_role -d postgres -c 'SELECT * FROM test_numbers;'"
           - "============================================"
