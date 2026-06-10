@@ -16,3 +16,5 @@ Keepalived следит за мастером etcd и patroni  и все все�
 
 
 etcd без сертификатов
+
+img src="https://github.com/oditynet/patroni-astra/blob/main/c08d771e-6516-4305-b5b7-40b40c766336.png" title="example" width="500" />
