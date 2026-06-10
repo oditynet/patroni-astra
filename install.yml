@@ -664,6 +664,7 @@
     - name: Start keepalived
       ansible.builtin.shell: |
         systemctl daemon-reload
+        systemctl enable keepalived.service
         systemctl restart keepalived.service &
       args:
         executable: /bin/bash
@@ -1008,13 +1009,14 @@
         - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
         - ansible_facts['distribution_major_version'] in ["7", "8"]
 
+    - name: Enable patroni systemd
+      systemd_service:
+        name: patroni
+        enabled: true
+
     - name: reload_systemd
       systemd:
         daemon_reload: yes
-      when:
-        - ansible_facts['distribution'] == "RED" or ansible_facts['distribution'] == "RedOS"
-        - ansible_facts['distribution_major_version'] in ["7", "8"]
-
 
 #    - name: "Удалить строку lc_messages из файла для Astra Linux"
 #      ansible.builtin.lineinfile:
